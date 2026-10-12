@@ -142,7 +142,7 @@ func pump(ctx context.Context, dec *kiro.Decoder, first kiro.Event, sink turn.Si
 	ping := time.NewTicker(pingEvery)
 	defer ping.Stop()
 
-	var out, think strings.Builder
+	var out, think, toolArgs strings.Builder
 	tools := 0
 	pending := ""
 	limited := false
@@ -173,7 +173,13 @@ func pump(ctx context.Context, dec *kiro.Decoder, first kiro.Event, sink turn.Si
 		sink.Fail(r.failure.Status, r.failure.Message)
 		return partial(r)
 	}
+	validToolArgs := func() bool {
+		return toolArgs.Len() == 0 || json.Valid([]byte(toolArgs.String()))
+	}
 	finish := func(stop string, k kiro.Usage) reply {
+		if !validToolArgs() {
+			return fail("upstream tool arguments are not valid JSON")
+		}
 		stopReader()
 		u := settle(measure(k), k)
 		sink.End(stop, u)
@@ -287,6 +293,10 @@ func pump(ctx context.Context, dec *kiro.Decoder, first kiro.Event, sink turn.Si
 		case kiro.EvSig:
 			sink.Signature(ev.Text)
 		case kiro.EvToolStart:
+			if !validToolArgs() {
+				return fail("upstream tool arguments are not valid JSON")
+			}
+			toolArgs.Reset()
 			if po.maxTokens > 0 && meter.Count(out.String()+ev.Name)+meter.Count(think.String())+(tools+1)*toolCallTokens > po.maxTokens {
 				limited = true
 				return finish(turn.StopMaxTokens, kiro.Usage{})
@@ -295,7 +305,10 @@ func pump(ctx context.Context, dec *kiro.Decoder, first kiro.Event, sink turn.Si
 			out.WriteString(ev.Name)
 			sink.ToolStart(ev.ID, ev.Name)
 		case kiro.EvToolArgs:
-			if deliver(ev.Text, false, sink.ToolArgs) {
+			if deliver(ev.Text, false, func(text string) {
+				toolArgs.WriteString(text)
+				sink.ToolArgs(text)
+			}) {
 				limited = true
 				return finish(turn.StopMaxTokens, kiro.Usage{})
 			}

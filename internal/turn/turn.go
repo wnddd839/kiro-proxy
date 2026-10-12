@@ -162,14 +162,14 @@ func (c *Collector) ToolArgs(s string) {
 // Ping 无操作。
 func (c *Collector) Ping() {}
 
-// End 收尾：工具参数解析为 JSON，非法时为 {}。
+// End 收尾：参数已由事件管线校验；空参数保留为 {}。
 func (c *Collector) End(stop string, u Usage) {
 	for i := range c.Turn.Blocks {
 		if c.Turn.Blocks[i].Kind != "tool_use" {
 			continue
 		}
 		c.Turn.Blocks[i].Input = json.RawMessage("{}")
-		if a := c.args[i]; a != "" && json.Valid([]byte(a)) {
+		if a := c.args[i]; a != "" {
 			c.Turn.Blocks[i].Input = json.RawMessage(a)
 		}
 	}
