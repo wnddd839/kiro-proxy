@@ -123,7 +123,8 @@ func (f *fakeKiro) handler(t *testing.T) http.Handler {
 		}
 		w.Write(frame("assistantResponseEvent", `{"content":"hello "}`))
 		w.Write(frame("assistantResponseEvent", `{"content":"world"}`))
-		w.Write(frame("metadataEvent", `{"tokenUsage":{"uncachedInputTokens":10,"outputTokens":3,"cacheReadInputTokens":900,"cacheWriteInputTokens":5}}`))
+		// 上游报的输入含 Kiro 隐藏基线：客户端 10 + hidden 4052。
+		w.Write(frame("metadataEvent", `{"tokenUsage":{"uncachedInputTokens":4062,"outputTokens":3,"cacheReadInputTokens":900,"cacheWriteInputTokens":5}}`))
 	})
 	mux.HandleFunc("GET /mgmt/{region}/List-Available-Models", func(w http.ResponseWriter, r *http.Request) {
 		if f.modelsJSON != "" {

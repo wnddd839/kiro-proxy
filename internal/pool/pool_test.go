@@ -854,15 +854,28 @@ func TestCredRefreshRejectedDisables(t *testing.T) {
 	if err == nil || !kiro.IsGone(err) {
 		t.Fatalf("err = %v, want gone", err)
 	}
+	// a 是唯一的启用号：last-account 保护，不停用，改长冷却并告警
 	v, _ := p.Get("a")
+	if v.Disabled || v.CooldownUntil.Before(time.Now().Add(23*time.Hour)) {
+		t.Fatalf("last account must be kept with a long cooldown: %+v", v)
+	}
+	// 再加一个号：a 不再是最后一个启用号，invalid_grant 立即停用
+	mustAdd(t, p, Account{ID: "b", Cred: freshCred("b")})
+	_, err = p.Cred(t.Context(), "a", "")
+	if err == nil || !kiro.IsGone(err) {
+		t.Fatalf("err = %v, want gone", err)
+	}
+	v, _ = p.Get("a")
 	if !v.Disabled || !strings.Contains(v.Note, "sign-in expired") {
 		t.Fatalf("view = disabled %v note %q", v.Disabled, v.Note)
 	}
 	if f := readFile(t, path); !f.Accounts[0].Disabled || f.Accounts[0].Note == "" {
 		t.Errorf("disable not persisted: %+v", f.Accounts[0])
 	}
-	if _, err := p.Acquire("", nil); !errors.Is(err, ErrNoAccount) {
-		t.Errorf("Acquire after disable err = %v", err)
+	if l, err := p.Acquire("", nil); err != nil {
+		t.Errorf("Acquire after disable should fall back to b: %v", err)
+	} else {
+		l.Release()
 	}
 }
 
@@ -1154,6 +1167,8 @@ func TestRefresh401ThreeStrikes(t *testing.T) {
 	c := freshCred("old")
 	c.ExpiresAt = time.Now().Add(-time.Minute)
 	mustAdd(t, p, Account{ID: "a", Cred: c})
+	// 第二个号：a 不再是最后一个启用号，连续 3 次 401 会停用 a
+	mustAdd(t, p, Account{ID: "b", Cred: freshCred("b")})
 
 	fk.refreshCode.Store(http.StatusUnauthorized)
 	for i := 1; i <= 2; i++ {
@@ -1222,16 +1237,23 @@ func TestBreakerRefresh403StormDisablesNone(t *testing.T) {
 			t.Errorf("%s disabled on disk", a.ID)
 		}
 	}
-	// 任意请求成功就解除熔断
+	// 单次成功不清失败历史：比例窗口内仍是失败的多数，熔断保持打开，直到窗口自然过期
 	p.Success("a", kiro.Usage{}, 0, false)
+	if b := p.Breaker(); !b.Open {
+		t.Fatalf("single success must not clear the failure window: %+v", b)
+	}
+	// 窗口整体过期后自然解除
+	clock = clock.Add(p.brk.window + time.Second)
 	if b := p.Breaker(); b.Open {
-		t.Fatalf("breaker after success = %+v", b)
+		t.Fatalf("breaker after window expiry = %+v", b)
 	}
 }
 
-// 熔断有下限：只有一个号在失败时（哪怕它就是全部的号）按单号逻辑走，连续 3 次 401 照样停号。
+// 熔断有下限：只有一个号在失败时按单号逻辑走，连续 3 次 401 停号——但最后一个启用号受保护，不停用。
 func TestBreakerSingleAccount401StillDisables(t *testing.T) {
 	for _, accounts := range []int{1, 5} {
+		// accounts=1：唯一启用号，last-account 保护，不停用；accounts=5：a0 会停用
+		wantDisabled := accounts == 5
 		t.Run(fmt.Sprint(accounts), func(t *testing.T) {
 			fk := newFakeKiro(t)
 			fk.refreshCode.Store(http.StatusUnauthorized)
@@ -1241,8 +1263,9 @@ func TestBreakerSingleAccount401StillDisables(t *testing.T) {
 			}
 			for i := 1; i <= maxRefreshFailures; i++ {
 				_, _ = p.ForceRefresh(t.Context(), "a0")
-				if v, _ := p.Get("a0"); v.Disabled != (i == maxRefreshFailures) {
-					t.Fatalf("after %d: disabled %v fails %d", i, v.Disabled, v.RefreshFails)
+				v, _ := p.Get("a0")
+				if want := wantDisabled && i == maxRefreshFailures; v.Disabled != want {
+					t.Fatalf("after %d: disabled %v (want %v) fails %d", i, v.Disabled, want, v.RefreshFails)
 				}
 			}
 			if b := p.Breaker(); b.Open {

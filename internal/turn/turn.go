@@ -9,6 +9,7 @@ const (
 	StopEndTurn   = "end_turn"
 	StopToolUse   = "tool_use"
 	StopMaxTokens = "max_tokens"
+	StopSequence  = "stop_sequence"
 	StopRefusal   = "refusal"
 )
 
@@ -16,12 +17,15 @@ const (
 //
 // 输入侧三项互不重叠：PromptTokens = Input + CacheRead + CacheWrite。
 type Usage struct {
-	Input      int // 未命中、也不写入缓存的输入；本地估算包含 Kiro 自带的 system/模板基线
+	Input      int // 未命中、也不写入缓存的客户端输入，不含隐藏上下文
 	CacheRead  int // 命中缓存的前缀
 	CacheWrite int // 本次写入缓存的输入
-	// KiroInput 是 Input 中本地估算的 Kiro 固定基线，仅供内部 credits 估算，避免重复计入。
+	// KiroInput 是独立的隐藏上下文，不属于 PromptTokens。
 	// 上游报告输入用量时清零，直接按报告的冷 / 热拆分估算。
-	KiroInput int
+	KiroInput        int
+	HiddenChargedUSD float64
+	StopSequence     string
+	Limited          bool
 	// CacheWrite1h 是 CacheWrite 里按 1 小时 TTL 写入的部分（2 倍输入价）；其余是 5 分钟写入。
 	CacheWrite1h int
 	Output       int

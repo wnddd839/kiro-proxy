@@ -338,7 +338,7 @@ pre{
     <div class="notes">
       <div class="note-item">
         <h3>缓存策略</h3>
-        <p>同一会话粘在同一个号上（session_ttl 内），并为会话生成稳定的 conversationId；请求前缀做修复与规整（sort_tools 排序工具定义、支持的模型使用原生思考参数，pin_thinking 仅固定旧模型的预算标签），保证上游前缀字节一致，以便命中 prompt cache。账号忙时排队，超时提示重试；只有不可用时才换号，换号不共享原号的缓存。</p>
+        <p>同一会话粘在同一个号上（session_ttl 内），并为会话生成稳定的 conversationId；工具定义排序，原生 effort 按线程及模型锁定首轮值，pin_thinking 固定旧模型的预算标签，以减少前缀变化。system 前缀未变时保留线程键，替换前缀时记录变化原因。账号忙时排队，超时提示重试；只有不可用时才换号，换号不共享原号的缓存。</p>
       </div>
       <div class="note-item">
         <h3>命中率口径</h3>
@@ -799,7 +799,7 @@ function renderOverview(d){
   $('ovStarted').textContent = d.started_at ? ' 启动于 ' + fmtTime(d.started_at) + '（' + relTime(d.started_at) + '）。' : '';
   var brk = d.breaker || {};
   $('ovBreaker').hidden = !brk.open;
-  $('ovBreaker').textContent = brk.open ? '全局熔断：' + (brk.kinds || []).map(function(k){ return k.kind + ' ' + k.accounts + '/' + k.enabled + ' 个号，始于 ' + fmtTime(k.since); }).join('；') + '。窗口 ' + brk.window + ' 内多数号同类失败，疑似网络或上游故障：只冷却、不停号；任一请求成功即解除。' : '';
+  $('ovBreaker').textContent = brk.open ? '全局熔断：' + (brk.kinds || []).map(function(k){ return k.kind + ' 失败 ' + k.failures + '/' + k.total + ' (' + (k.ratio * 100).toFixed(1) + '%)，涉及 ' + k.accounts + '/' + k.enabled + ' 个号，始于 ' + fmtTime(k.since); }).join('；') + '。窗口 ' + brk.window + ' 内同类失败率超过 50% 且涉及至少 2 个号：只冷却、不停号；成功计入分母，不清空历史；仅剩一个启用号时不熔断。' : '';
   $('mHit').textContent = fmtPct(d.cache_hit_rate);
   $('mEnabled').innerHTML = escapeHtml(fmtN(acc.enabled)) + ' <small>/ ' + escapeHtml(fmtN(acc.total)) + '</small>';
   $('mCooling').textContent = fmtN(acc.cooling);
@@ -1001,7 +1001,7 @@ function renderAccount(a){
 	  h += kvCell('cache write', escapeHtml(fmtN(st.cache_write_tokens)));
   h += '</div>';
   if (a.reregister) h += '<div class="err">需要重新登录：AWS IdC 的 client 注册已过期，refresh token 本身没有失效。用「浏览器登录」重新登录这个号后删掉旧的。</div>';
-  if (a.refresh_failures && !a.disabled) h += '<div class="meta">连续刷新失败 ' + escapeHtml(fmtN(a.refresh_failures)) + ' / 3 次（到 3 次停号，成功一次清零）</div>';
+  if (a.refresh_failures && !a.disabled) h += '<div class="meta">连续刷新失败 ' + escapeHtml(fmtN(a.refresh_failures)) + ' / 3 次（到 3 次尝试停号；最后一个启用号仅告警冷却；熔断触发时回退窗口内 strike）</div>';
   if (cooling && a.cooldown_reason) h += '<div class="err">冷却原因：' + escapeHtml(a.cooldown_reason) + '</div>';
   if (a.disabled && a.note) h += '<div class="err">停用原因：' + escapeHtml(a.note) + '</div>';
   else if (a.note) h += '<div class="meta">备注：' + escapeHtml(a.note) + '</div>';
@@ -1626,7 +1626,7 @@ function loadModels(){
 	      '<td>' + (pc ? (pc.supported ? '<span class="badge on" title="最多 ' + (pc.max_checkpoints || '?') + ' 个断点，每段 ≥ ' + (pc.min_tokens || '?') + ' token">支持</span>' : '<span class="badge off">不支持</span>') : '—') + '</td>' +
 	      '<td class="num">' + (m.priced ? escapeHtml(fmtNum(pr.input, 2)) : '—') + '</td>' +
 	      '<td class="num">' + (m.priced ? escapeHtml(fmtNum(pr.output, 2)) : '—') + '</td>' +
-	      '<td class="mono">' + escapeHtml(pr.source || (m.priced ? '' : 'fallback')) + '</td></tr>';
+	      '<td class="mono">' + escapeHtml(pr.source || (m.priced ? '' : 'fallback')) + (pr.warning ? '<br><span class="badge off">' + escapeHtml(pr.warning) + '</span>' : '') + '<br>隐藏 ' + escapeHtml(m.hidden_tokens) + ' · ' + escapeHtml(m.hidden_calibration) + '</td></tr>';
 	  });
 	  h += '</tbody></table>';
 	  wrap.innerHTML = h;

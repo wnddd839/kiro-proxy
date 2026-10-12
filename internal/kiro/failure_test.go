@@ -25,13 +25,15 @@ func TestClassify(t *testing.T) {
 		{"403 token", 403, `{"message":"The bearer token included in the request is invalid."}`, 403, ClassAuth, "bearer token"},
 		{"403 expired", 403, `{"__type":"ExpiredTokenException","message":"expired"}`, 403, ClassAuth, "expired"},
 		{"403 other", 403, `{"message":"forbidden"}`, 403, ClassForbidden, "forbidden"},
-		{"403 html", 403, `<html>Request blocked</html>`, 403, ClassForbidden, "blocked"},
+		{"403 html", 403, `<html>Request blocked</html>`, 403, ClassForbidden, "[body omitted]"},
 		{"429 plain", 429, `{"message":"Too many requests, please wait"}`, 429, ClassThrottle, "Too many requests"},
 		{"429 quota words", 429, `{"message":"monthly quota exhausted"}`, 429, ClassQuota, "monthly quota"},
 		{"429 rate exceeded", 429, `{"message":"Rate exceeded"}`, 429, ClassThrottle, "Rate exceeded"},
 		{"429 rate exceeded plain", 429, `Rate exceeded`, 429, ClassThrottle, "Rate exceeded"},
 		{"429 throttling exception", 429, `{"__type":"ThrottlingException","message":"Rate exceeded"}`, 429, ClassThrottle, "Rate exceeded"},
 		{"429 too many requests", 429, `Too many requests`, 429, ClassThrottle, "Too many requests"},
+		{"429 suspicious activity", 429, `{"message":"Suspicious activity detected."}`, 429, ClassSoftBan, "suspicious activity"},
+		{"429 suspicious raw", 429, `Activity is suspicious and unusual`, 429, ClassSoftBan, "suspicious activity"},
 		{"429 reached the limit", 429, `{"message":"You have reached the limit."}`, 429, ClassQuota, "reached the limit"},
 		{"throttling at 400", 400, `{"message":"ThrottlingException: slow down"}`, 429, ClassThrottle, "Throttling"},
 		{"throttled plain at 400", 400, `{"message":"request throttled"}`, 429, ClassThrottle, "throttled"},
@@ -67,6 +69,8 @@ func TestClassifyStream(t *testing.T) {
 		{"MONTHLY_REQUEST_COUNT", 429, ClassQuota},
 		{"rate limited: slow down", 429, ClassThrottle},
 		{"ThrottlingException: too fast", 429, ClassThrottle},
+		{"stream error: suspicious activity detected", 429, ClassSoftBan},
+		{"abnormal activity on this account", 429, ClassSoftBan},
 		{"validationError: bad", 400, ClassFatal},
 		{"the reply broke off: unexpected EOF", 502, ClassTransient},
 		{"internalServerException: boom", 502, ClassTransient},
@@ -91,13 +95,23 @@ func TestErrorMessage(t *testing.T) {
 		{400, `{"message":"m","reason":"R"}`, "m (R)"},
 		{400, `{"error":"invalid_grant"}`, "invalid_grant"},
 		{400, `{"error_description":"d","error":"e"}`, "d"},
-		{400, `{"other":1}`, `{"other":1}`},
+		{400, `{"other":1}`, "[body omitted]"},
 		{503, `  `, "Service Unavailable"},
 		{500, ` plain `, "plain"},
 	} {
 		if got := errorMessage(tt.status, []byte(tt.body)); got != tt.want {
 			t.Errorf("errorMessage(%d, %q) = %q, want %q", tt.status, tt.body, got, tt.want)
 		}
+	}
+	// 未知结构的返回体（HTML / 无 message 字段的 JSON）不落进消息，避免泄漏上游正文。
+	for _, raw := range []string{`<html>private</html>`, `{"other":1}`, `["a"]`} {
+		if got := errorMessage(400, []byte(raw)); strings.Contains(got, "private") || strings.Contains(got, "other") {
+			t.Errorf("errorMessage(%q) = %q, body leaked", raw, got)
+		}
+	}
+	// 分类仍要看原文：message 字段带敏感字样时清理凭证后保留语义。
+	if got := errorMessage(429, []byte(`{"message":"suspicious activity; Bearer abcdefghijk"}`)); !strings.Contains(got, "suspicious activity") || strings.Contains(got, "abcdefghijk") {
+		t.Errorf("errorMessage(429) = %q, want classification kept but secret redacted", got)
 	}
 }
 

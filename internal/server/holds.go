@@ -8,9 +8,9 @@ import (
 
 // hold 是一个在途请求在准入时为 key 预留的额度。
 type hold struct {
-	key  string
-	amt  keys.Spent
-	once sync.Once
+	key      string
+	amt      keys.Spent
+	released bool
 }
 
 // holdTable 记每把 key 在途请求的预留总量。准入判断看「已入账 + 预留」，
@@ -37,19 +37,28 @@ func (t *holdTable) release(h *hold) {
 	if h == nil {
 		return
 	}
-	h.once.Do(func() {
-		t.mu.Lock()
-		defer t.mu.Unlock()
-		r := t.byKey[h.key]
-		r.Requests -= h.amt.Requests
-		r.Credits -= h.amt.Credits
-		r.CostUSD -= h.amt.CostUSD
-		if r.Requests <= 0 {
-			delete(t.byKey, h.key)
-			return
-		}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.releaseLocked(h)
+}
+
+func (t *holdTable) releaseLocked(h *hold) {
+	if h != nil && !h.released {
+		h.released = true
+		t.subtractLocked(h)
+	}
+}
+
+func (t *holdTable) subtractLocked(h *hold) {
+	r := t.byKey[h.key]
+	r.Requests -= h.amt.Requests
+	r.Credits -= h.amt.Credits
+	r.CostUSD -= h.amt.CostUSD
+	if r.Requests <= 0 {
+		delete(t.byKey, h.key)
+	} else {
 		t.byKey[h.key] = r
-	})
+	}
 }
 
 // reserved 是 key 当前的预留总量。

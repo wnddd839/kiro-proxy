@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"strings"
 	"time"
 
 	"kiro-proxy/internal/kiro"
@@ -88,7 +90,10 @@ type Config struct {
 	// 只用于上游没来得及报 credits 的请求（中断 / 断流）。空 = 内置暂定系数。
 	CreditRates map[string]meter.CreditRate `json:"credit_rates,omitzero"`
 	// Prices 覆盖内置价格表：模型 id 前缀 → 每百万 token 美元。
-	Prices map[string]meter.Price `json:"prices,omitzero"`
+	Prices              map[string]meter.Price `json:"prices,omitzero"`
+	HiddenTokensBilling string                 `json:"hidden_tokens_billing"`
+	HiddenTokens        map[string]int         `json:"hidden_tokens,omitzero"`
+	UnknownModelPricing string                 `json:"unknown_model_pricing"`
 	// PriceSync 是在线价格的拉取间隔（仅 OpenRouter）；0 = 只用内置表。
 	PriceSync Duration `json:"price_sync"`
 	// PricesFile 缓存上次拉到的在线价格；空 = 只在内存。
@@ -104,7 +109,10 @@ type Config struct {
 	// ModelAliases 把下游模型名映射到 Kiro 模型 id，优先于内置推断。
 	ModelAliases map[string]string `json:"model_aliases,omitzero"`
 
-	MaxAttempts int `json:"max_attempts"`
+	MaxAttempts              int      `json:"max_attempts"`
+	UpstreamConnectTimeout   Duration `json:"upstream_connect_timeout"`
+	UpstreamFirstByteTimeout Duration `json:"upstream_first_byte_timeout"`
+	UpstreamIdleTimeout      Duration `json:"upstream_idle_timeout"`
 	// MaxConcurrent 是没单独设 max_concurrent 的号的并发上限；0 = 不限。
 	MaxConcurrent  int      `json:"max_concurrent"`
 	LimitsInterval Duration `json:"limits_interval"`
@@ -112,35 +120,49 @@ type Config struct {
 	// （刷新失败 / 403 / 网络）时只冷却、不停号。
 	BreakerWindow Duration `json:"breaker_window"`
 	LogLevel      string   `json:"log_level"`
-	// DebugRequestsDir 非空时保存完整上游请求和前缀诊断，包含对话与图片；默认关闭。
+	// ServerReadTimeout 是下游 HTTP 读超时（请求行 / 头 / body）。0 = 用内置默认。
+	ServerReadTimeout Duration `json:"server_read_timeout,omitzero"`
+	// DebugRequestsDir 非空时保存已脱敏的上游请求与前缀诊断（对话正文保留供诊断，
+	// Authorization / profileArn / 图片字节 / 显式密钥替换为 [REDACTED]）；默认关闭。
 	DebugRequestsDir string `json:"debug_requests_dir,omitzero"`
+	// DebugRequestsMaxBytes 是调试目录的字节上限；超出时按最旧优先清理。0 = 用内置默认。
+	DebugRequestsMaxBytes int64 `json:"debug_requests_max_bytes,omitzero"`
+	// DebugRequestsRetention 是调试快照的保留期；过期文件由后台周期清理。0 = 用内置默认。
+	DebugRequestsRetention Duration `json:"debug_requests_retention,omitzero"`
+	// AllowInsecureListen 显式允许在没有下游 key 时监听非回环地址；启动时会打醒目警告。
+	AllowInsecureListen bool `json:"allow_insecure_listen,omitzero"`
 }
 
 // Default 是默认配置。
 func Default() Config {
 	return Config{
-		Listen:            "127.0.0.1:8787",
-		AccountsFile:      "accounts.json",
-		KeysFile:          "keys.json",
-		UsageFile:         "usage.jsonl",
-		UsageRetention:    Duration(90 * 24 * time.Hour),
-		CacheMode:         meter.ModeAuto,
-		OpenAIHostedTools: "drop",
-		CacheTTL:          CacheTTLClient,
-		CacheFile:         "promptcache.json",
-		CostBasis:         meter.BasisAPI,
-		CreditUSD:         0.02,
-		PriceSync:         Duration(24 * time.Hour),
-		PricesFile:        "prices.json",
-		SessionTTL:        Duration(24 * time.Hour),
-		ConversationMode:  ConversationSession,
-		SortTools:         true,
-		PinThinking:       true,
-		MaxAttempts:       3,
-		MaxConcurrent:     3,
-		LimitsInterval:    0, // 不定时轮询：只在号报额度用尽时查它一个
-		BreakerWindow:     Duration(2 * time.Minute),
-		LogLevel:          "info",
+		Listen:                   "127.0.0.1:8787",
+		AccountsFile:             "accounts.json",
+		KeysFile:                 "keys.json",
+		UsageFile:                "usage.jsonl",
+		UsageRetention:           Duration(90 * 24 * time.Hour),
+		CacheMode:                meter.ModeAuto,
+		OpenAIHostedTools:        "drop",
+		CacheTTL:                 CacheTTLClient,
+		CacheFile:                "promptcache.json",
+		CostBasis:                meter.BasisAPI,
+		HiddenTokensBilling:      "input",
+		UnknownModelPricing:      "highest",
+		CreditUSD:                0.02,
+		PriceSync:                Duration(24 * time.Hour),
+		PricesFile:               "prices.json",
+		SessionTTL:               Duration(24 * time.Hour),
+		ConversationMode:         ConversationSession,
+		SortTools:                true,
+		PinThinking:              true,
+		MaxAttempts:              3,
+		UpstreamConnectTimeout:   Duration(15 * time.Second),
+		UpstreamFirstByteTimeout: Duration(60 * time.Second),
+		UpstreamIdleTimeout:      Duration(120 * time.Second),
+		MaxConcurrent:            3,
+		LimitsInterval:           0, // 不定时轮询：只在号报额度用尽时查它一个
+		BreakerWindow:            Duration(2 * time.Minute),
+		LogLevel:                 "info",
 	}
 }
 
@@ -188,6 +210,36 @@ func Load(path string) (Config, error) {
 
 // Validate 检查取值。
 func (c Config) Validate() error {
+	if c.UpstreamConnectTimeout < 0 || c.UpstreamFirstByteTimeout < 0 || c.UpstreamIdleTimeout < 0 {
+		return errors.New("upstream timeouts must not be negative")
+	}
+	if c.DebugRequestsMaxBytes < 0 {
+		return errors.New("debug_requests_max_bytes must not be negative")
+	}
+	if c.DebugRequestsRetention < 0 {
+		return errors.New("debug_requests_retention must not be negative")
+	}
+	if c.ServerReadTimeout < 0 {
+		return errors.New("server_read_timeout must not be negative")
+	}
+	// 空白 key 会让 ConstantTimeCompare 把"没带 key"的请求判成通过（空比空相等），
+	// 等于把号池暴露出去；必须拒绝。
+	for _, k := range c.APIKeys {
+		if strings.TrimSpace(k) == "" {
+			return errors.New("api_keys must not contain blank keys")
+		}
+	}
+	if c.HiddenTokensBilling != "" && c.HiddenTokensBilling != "input" && c.HiddenTokensBilling != "off" {
+		return errors.New("hidden_tokens_billing must be input or off")
+	}
+	if c.UnknownModelPricing != "" && c.UnknownModelPricing != "highest" && c.UnknownModelPricing != "reject" {
+		return errors.New("unknown_model_pricing must be highest or reject")
+	}
+	for _, n := range c.HiddenTokens {
+		if n < 0 {
+			return errors.New("hidden_tokens must not be negative")
+		}
+	}
 	switch c.ConversationMode {
 	case ConversationSession, ConversationRandom:
 	default:
@@ -237,4 +289,63 @@ func (c Config) Validate() error {
 		return errors.New("listen and accounts_file are required")
 	}
 	return nil
+}
+
+// HiddenTokensOf returns the configured model baseline; unmeasured models stay at 4052.
+func (c Config) HiddenTokensOf(model string) int {
+	if n, ok := c.HiddenTokens[meter.CanonModel(model)]; ok {
+		return n
+	}
+	return 4052
+}
+
+// ReachesBeyondLoopback 报告 listen 是否可能接受非本机连接：空 host、wildcard（0.0.0.0 / ::）、
+// 任意非回环 IP 或域名都算。localhost / *.localhost / 回环 IP 不算。
+func ReachesBeyondLoopback(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		host = listen // 没带端口（如 "127.0.0.1" / "0.0.0.0"）时整串当 host
+	}
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if host == "" {
+		return true // ":8787" / "" 落在所有网卡
+	}
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback()
+	}
+	return true // 域名可能解析到本机之外
+}
+
+// UnsafeListen 报告 listen 在没有任何下游 key 时是否会暴露给非本机：此时启动会把号池
+// 开放给整网。调用方应拒绝启动，除非操作者显式覆盖。
+func (c Config) UnsafeListen(hasKeys bool) bool {
+	return !hasKeys && ReachesBeyondLoopback(c.Listen)
+}
+
+// 调试请求快照的内置默认：最多 64 MiB、保留 24h。都可被配置覆盖。
+const (
+	DefaultDebugRequestsMaxBytes  = int64(64 << 20)
+	DefaultDebugRequestsRetention = 24 * time.Hour
+)
+
+// DebugRequestsEnabled 报告是否开启上游请求快照。
+func (c Config) DebugRequestsEnabled() bool { return c.DebugRequestsDir != "" }
+
+// DebugRequestsCap 是生效的字节上限。
+func (c Config) DebugRequestsCap() int64 {
+	if c.DebugRequestsMaxBytes > 0 {
+		return c.DebugRequestsMaxBytes
+	}
+	return DefaultDebugRequestsMaxBytes
+}
+
+// DebugRequestsTTL 是生效的保留期。
+func (c Config) DebugRequestsTTL() time.Duration {
+	if c.DebugRequestsRetention > 0 {
+		return time.Duration(c.DebugRequestsRetention)
+	}
+	return DefaultDebugRequestsRetention
 }

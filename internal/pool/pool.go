@@ -39,6 +39,12 @@ const refreshCooldown = time.Minute
 // DefaultBreakerWindow 是全局熔断的滑动窗口。
 const DefaultBreakerWindow = 2 * time.Minute
 
+// softBanCooldown 是上游风控 / 异常活动 429（软封）的冷却：远大于普通限流，换号后等一天再看。
+const softBanCooldown = 24 * time.Hour
+
+// stateSuffix 是非秘密运行时状态（冷却 / 统计）的 sidecar 后缀，与凭证文件分开落盘。
+const stateSuffix = ".state.json"
+
 // 全局熔断看的失败种类：窗口内超过一半的号出现同一种，判定为全局故障（网络 / 上游异常），不是号的问题。
 const (
 	FailForbidden = "forbidden" // 403（刷新或对话；不含封号文字）
@@ -130,16 +136,33 @@ type BreakerView struct {
 // BreakerKind 是一种正在熔断的失败。
 type BreakerKind struct {
 	Kind     string    `json:"kind"`
-	Accounts int       `json:"accounts"` // 窗口内出现这种失败的号数
-	Enabled  int       `json:"enabled"`  // 启用的号数
+	Accounts int       `json:"accounts"` // 窗口内出现这种失败的 distinct 号数
+	Enabled  int       `json:"enabled"`  // 全池启用号数
+	Failures int       `json:"failures"` // 窗口内该种类的失败结果数
+	Total    int       `json:"total"`    // 窗口内全部请求结果数（比例分母）
+	Ratio    float64   `json:"ratio"`    // Failures / Total
 	Since    time.Time `json:"since"`
 }
 
 // breaker 是全局熔断：由 Pool.mu 保护。
+//
+// 判据是「滑动时间窗内的失败比例」：窗口内某个种类的失败结果数 / 窗口内全部请求结果数 > 1/2，
+// 且失败覆盖 >= 2 个不同的号。按请求结果（outcome）计数，不是按账号数：
+// 这样单个号的一次成功只是把分母变大，不会清空其它号留下的整段失败历史。
 type breaker struct {
-	window time.Duration
-	seen   map[string]map[string]time.Time // 种类 → 号 → 最近一次失败
-	since  map[string]time.Time            // 种类 → 熔断开始；没熔断的不在表里
+	window   time.Duration
+	outcomes []outcome            // 窗口内的请求结果（成功 / 失败），按时间追加
+	since    map[string]time.Time // 种类 → 熔断开始；没熔断的不在表里
+	// counted 是种类 → 号 → 熔断触发前已计入 refreshFails 的时刻；触发时按时间窗回退。
+	counted map[string]map[string][]time.Time
+}
+
+// outcome 是一次请求结果：成功（Fail=false，Kind 为空）或某种失败。字段导出以便落盘。
+type outcome struct {
+	Kind string    `json:"kind,omitzero"`
+	ID   string    `json:"id"`
+	At   time.Time `json:"at"`
+	Fail bool      `json:"fail,omitzero"`
 }
 
 type slot struct {
@@ -242,12 +265,40 @@ type file struct {
 	Accounts []Account `json:"accounts"`
 }
 
+// accountState 是一个号落在 sidecar 里的非秘密运行时状态。冷却原因与统计都经过清理，
+// 绝不含原始上游正文或凭证。
+type accountState struct {
+	CooldownUntil time.Time `json:"cooldown_until,omitzero"`
+	CooldownWhy   string    `json:"cooldown_reason,omitzero"`
+	Strikes       int       `json:"strikes,omitzero"`
+	RefreshFails  int       `json:"refresh_fails,omitzero"`
+	Stats         Stats     `json:"stats"`
+}
+
+// stateFile 是 sidecar 的内容：号 ID → 运行时状态。与凭证文件分开落盘。
+type stateFile struct {
+	Accounts map[string]accountState `json:"accounts"`
+	// Breaker 是全局熔断的请求结果历史（非秘密：只有 kind / 号 ID / 时间 / 成功失败）。
+	// 存下来是为了重启后失败比例窗口不丢，冷却与统计之外也能继续判熔断。
+	Breaker []outcome `json:"breaker,omitzero"`
+	// Counted 是熔断触发前已计入各号的 refreshFails 时刻（非秘密：只有 kind / 号 ID / 时间）。
+	// 不存的话，重启后窗口内累的旧 strike 无法在新失败触发熔断时回退。
+	Counted []countedStrike `json:"counted,omitzero"`
+}
+
+// countedStrike 是一条「熔断触发前已计入某号某类失败」的记录。字段导出以便落盘。
+type countedStrike struct {
+	Kind string    `json:"kind"`
+	ID   string    `json:"id"`
+	At   time.Time `json:"at"`
+}
+
 // Open 读号池文件；文件不存在时从空池开始。
 func Open(path string, opts Options) (*Pool, error) {
 	p := &Pool{
 		path:    path,
 		client:  cmp.Or(opts.Client, kiro.NewClient(nil)),
-		log:     cmp.Or(opts.Logger, slog.Default()),
+		log:     kiro.SafeLogger(cmp.Or(opts.Logger, slog.Default())),
 		now:     time.Now,
 		slots:   map[string]*slot{},
 		pins:    sessionpin.New(opts.PinTTL),
@@ -261,10 +312,15 @@ func Open(path string, opts Options) (*Pool, error) {
 		p.pinWait = DefaultPinWait
 	}
 	p.maxConc = max(0, opts.MaxConcurrent)
-	p.brk = breaker{window: cmp.Or(opts.BreakerWindow, DefaultBreakerWindow), seen: map[string]map[string]time.Time{}, since: map[string]time.Time{}}
+	p.brk = breaker{
+		window:  cmp.Or(opts.BreakerWindow, DefaultBreakerWindow),
+		since:   map[string]time.Time{},
+		counted: map[string]map[string][]time.Time{},
+	}
 	raw, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
+		p.loadState()
 		return p, nil
 	case err != nil:
 		return nil, err
@@ -280,6 +336,7 @@ func Open(path string, opts Options) (*Pool, error) {
 		p.slots[a.ID] = &slot{acct: a}
 		p.order = append(p.order, a.ID)
 	}
+	p.loadState()
 	return p, nil
 }
 
@@ -288,6 +345,110 @@ func (p *Pool) Len() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.order)
+}
+
+// statePath 是运行时状态的 sidecar 路径（与凭证文件分开）。
+func (p *Pool) statePath() string { return p.path + stateSuffix }
+
+// loadState 读回 sidecar 里的非秘密运行时状态：冷却 / 统计 / 失败计数。
+// 缺失或损坏的 sidecar 只是没有历史，不影响启动；过期的冷却直接丢弃（号已经自然恢复）。
+func (p *Pool) loadState() {
+	raw, err := os.ReadFile(p.statePath())
+	if err != nil {
+		return
+	}
+	var sf stateFile
+	if err := json.Unmarshal(raw, &sf); err != nil {
+		p.log.Warn("ignoring unreadable pool state sidecar", "path", p.statePath(), "err", err)
+		return
+	}
+	now := p.now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// 重启后仍保留窗口内的请求结果历史，让失败比例分档跨重启连续。
+	for _, o := range sf.Breaker {
+		if now.Sub(o.At) <= p.brk.window {
+			p.brk.outcomes = append(p.brk.outcomes, o)
+		}
+	}
+	// 恢复熔断触发前的 strike 记账（只留窗口内的，过期丢弃），让重启后的新失败仍能回退旧 strike。
+	for _, cs := range sf.Counted {
+		if now.Sub(cs.At) > p.brk.window {
+			continue
+		}
+		if s := p.slots[cs.ID]; s == nil || s.acct.Disabled {
+			continue
+		}
+		if p.brk.counted[cs.Kind] == nil {
+			p.brk.counted[cs.Kind] = map[string][]time.Time{}
+		}
+		p.brk.counted[cs.Kind][cs.ID] = append(p.brk.counted[cs.Kind][cs.ID], cs.At)
+	}
+	for id, st := range sf.Accounts {
+		s := p.slots[id]
+		if s == nil {
+			continue // 号已删除：状态一并丢弃
+		}
+		if st.CooldownUntil.After(now) {
+			s.cooldown, s.cooldownWhy = st.CooldownUntil, kiro.Diagnostic(st.CooldownWhy)
+		}
+		s.strikes, s.refreshFails, s.stats = st.Strikes, st.RefreshFails, st.Stats
+	}
+}
+
+// stateSnapshot 在 p.mu 下抓一个非秘密运行时状态快照。写出的原因文本再清理一遍：
+// sidecar 绝不能带原始上游正文或凭证回声。
+func (p *Pool) stateSnapshot() stateFile {
+	sf := stateFile{Accounts: make(map[string]accountState, len(p.order))}
+	for _, id := range p.order {
+		s := p.slots[id]
+		if s == nil {
+			continue
+		}
+		sf.Accounts[id] = accountState{
+			CooldownUntil: s.cooldown,
+			CooldownWhy:   kiro.Diagnostic(s.cooldownWhy),
+			Strikes:       s.strikes,
+			RefreshFails:  s.refreshFails,
+			Stats:         s.stats,
+		}
+	}
+	// 只存窗口内的结果：过期的本来就不参与比例判断。
+	now := p.now()
+	for _, o := range p.brk.outcomes {
+		if now.Sub(o.At) <= p.brk.window {
+			sf.Breaker = append(sf.Breaker, o)
+		}
+	}
+	// 只存窗口内的 strike 记账：过期的重启时也会被丢弃。
+	for kind, byID := range p.brk.counted {
+		for id, times := range byID {
+			for _, at := range times {
+				if now.Sub(at) <= p.brk.window {
+					sf.Counted = append(sf.Counted, countedStrike{Kind: kind, ID: id, At: at})
+				}
+			}
+		}
+	}
+	return sf
+}
+
+// saveState 原子地把最新的非秘密运行时状态写到 sidecar（临时文件 + rename）。
+// 锁序与 save 一致：先 saveMu 再 p.mu，快照在 saveMu 内取，避免并发下旧快照覆盖新状态。
+func (p *Pool) saveState() {
+	p.saveMu.Lock()
+	defer p.saveMu.Unlock()
+	p.mu.Lock()
+	sf := p.stateSnapshot()
+	p.mu.Unlock()
+	raw, err := json.MarshalIndent(sf, "", "  ")
+	if err != nil {
+		p.log.Error("marshal pool state", "err", err)
+		return
+	}
+	if err := kiro.WriteFileAtomic(p.statePath(), raw); err != nil {
+		p.log.Error("save pool state", "err", err)
+	}
 }
 
 // Add 加一个号并落盘。ID 为空时生成。
@@ -342,6 +503,33 @@ func (p *Pool) SetDisabled(id string, disabled bool, note string) error {
 	}
 	p.mu.Unlock()
 	return p.save()
+}
+
+// enabledCountLocked 是当前启用（未停用）的号数。
+func (p *Pool) enabledCountLocked() int {
+	n := 0
+	for _, s := range p.slots {
+		if !s.acct.Disabled {
+			n++
+		}
+	}
+	return n
+}
+
+// disableLocked 是自动停用路径（封号 / 刷新失效 / 连续刷新失败）的统一入口：由 p.mu 保护。
+// 绝不停用最后一个启用号（那会让号池彻底不可用）；拒绝时返回 false，调用方应改为长时间冷却并告警。
+// note 必须是已脱敏文本。
+func (p *Pool) disableLocked(s *slot, note string) bool {
+	if s.acct.Disabled {
+		return true
+	}
+	if p.enabledCountLocked() <= 1 {
+		p.log.Error("refusing to disable the last enabled account; keeping it and cooling instead",
+			"account", s.acct.ID, "reason", note)
+		return false
+	}
+	s.acct.Disabled, s.acct.Note = true, note
+	return true
 }
 
 // SetMaxConcurrent 改一个号的并发上限并落盘；0 用号池默认。
@@ -623,10 +811,13 @@ func (p *Pool) Unpin(key string) {
 	p.pins.Forget(key)
 }
 
-// Success 记一次成功，清掉限流计数。
+// Success 记一次成功，清掉该号的限流 strikes。
+// 注意：成功不清全局熔断的失败历史。窗口内的失败记录靠时间自然过期，
+// 另外把这次成功记进窗口，让「失败比例」的分母反映窗口内的活跃号：
+// 单个号成功不该抹掉其它号的整段失败历史。
 func (p *Pool) Success(id string, u kiro.Usage, costUSD float64, estimated bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	now := p.now()
 	if s := p.slots[id]; s != nil {
 		s.stats.Add(u, costUSD)
 		if estimated {
@@ -636,61 +827,113 @@ func (p *Pool) Success(id string, u kiro.Usage, costUSD float64, estimated bool)
 		}
 		s.strikes = 0
 	}
-	// 有请求成功：上游是通的，提前解除熔断
-	if len(p.brk.since) > 0 {
-		p.log.Info("global breaker closed: a request succeeded", "account", id)
-	}
-	clear(p.brk.seen)
-	clear(p.brk.since)
+	p.recordSuccessLocked(id, now)
+	p.mu.Unlock()
+	p.saveState()
 }
 
-// suspectLocked 记一次可能是全局故障的失败，返回这种失败此刻是否熔断。
+// suspectLocked 记一次可能是全局故障的失败结果，返回这种失败此刻是否熔断。
+// 若这次失败让熔断首次触发，则回退窗口内已计入各号的 refreshFails：
+// 触发前的失败是全局故障的征兆，不该算成某个号自己的连续失败。
 func (p *Pool) suspectLocked(kind, id string, now time.Time) bool {
-	m := p.brk.seen[kind]
-	if m == nil {
-		m = map[string]time.Time{}
-		p.brk.seen[kind] = m
+	p.recordLocked(kind, id, now, true)
+	_, was := p.brk.since[kind]
+	open := p.trippedLocked(kind, now)
+	if open && !was {
+		p.rollbackStrikesLocked(kind, now)
 	}
-	m[id] = now
-	return p.trippedLocked(kind, now)
+	return open
 }
 
-// trippedLocked 报告一种失败是否熔断：窗口内出现它的启用号 >= 2 且超过启用号的一半。
-// 只有一个号失败时不判断，按单号逻辑走。
+// recordSuccessLocked 记一次成功的请求结果（也进比例窗口的分母）。
+func (p *Pool) recordSuccessLocked(id string, now time.Time) {
+	p.recordLocked("", id, now, false)
+}
+
+func (p *Pool) recordLocked(kind, id string, now time.Time, fail bool) {
+	p.brk.outcomes = append(p.brk.outcomes, outcome{Kind: kind, ID: id, At: now, Fail: fail})
+	// 结果按时间追加：从队首丢掉窗口外的旧结果，避免没有熔断查询时无限增长。
+	cut := 0
+	for cut < len(p.brk.outcomes) && now.Sub(p.brk.outcomes[cut].At) > p.brk.window {
+		cut++
+	}
+	if cut > 0 {
+		p.brk.outcomes = append(p.brk.outcomes[:0], p.brk.outcomes[cut:]...)
+	}
+}
+
+// countStrikeLocked 记下这个号在熔断触发前已经被计入的失败时刻（refreshFails）。
+// 熔断一旦触发就按时间窗回退：这些是全局故障，不该算成某个号自己的连续失败。
+func (p *Pool) countStrikeLocked(kind, id string, now time.Time) {
+	m := p.brk.counted[kind]
+	if m == nil {
+		m = map[string][]time.Time{}
+		p.brk.counted[kind] = m
+	}
+	m[id] = append(m[id], now)
+}
+
+// rollbackStrikesLocked 把某种失败在触发前计入各号的 refreshFails 回退，仅回退仍在窗口内的记录：
+// 过期的旧失败不在本窗口内，不该被回退，也不该继续记在 counted 里。
+func (p *Pool) rollbackStrikesLocked(kind string, now time.Time) {
+	m := p.brk.counted[kind]
+	for id, times := range m {
+		s := p.slots[id]
+		for _, at := range times {
+			if now.Sub(at) <= p.brk.window && s != nil {
+				s.refreshFails = max(0, s.refreshFails-1) // 仅回退仍在窗口内的失败
+			}
+		}
+		delete(m, id) // 触发后清空记账；过期的记录一并丢弃
+	}
+}
+
+// trippedLocked 报告一种失败是否熔断：滑动窗口内该种类的失败结果数 / 全部请求结果数 > 1/2，
+// 且失败覆盖 >= 2 个不同的号。只有一个号失败时按单号逻辑走。
 func (p *Pool) trippedLocked(kind string, now time.Time) bool {
-	n, enabled := p.breakerCountLocked(kind, now)
-	open := n >= 2 && 2*n > enabled
+	fail, total, distinct := p.breakerWindowLocked(kind, now)
+	open := distinct >= 2 && 2*fail > total
 	_, was := p.brk.since[kind]
 	switch {
 	case open && !was:
 		p.brk.since[kind] = now
-		p.log.Error("global breaker open: most accounts fail the same way; cooling only, not disabling accounts",
-			"kind", kind, "accounts", n, "enabled", enabled, "window", p.brk.window)
+		p.log.Error("global breaker open: most requests fail the same way; cooling only, not disabling accounts",
+			"kind", kind, "failures", fail, "total", total, "accounts", distinct, "window", p.brk.window)
 	case !open && was:
 		delete(p.brk.since, kind)
+		clear(p.brk.counted[kind]) // 熔断解除：触发前的记账作废，重新开始累计
 		p.log.Info("global breaker closed", "kind", kind)
 	}
 	return open
 }
 
-// breakerCountLocked 清掉窗口外的记录，返回窗口内出现这种失败的启用号数与启用号总数。
-func (p *Pool) breakerCountLocked(kind string, now time.Time) (n, enabled int) {
-	for _, s := range p.slots {
-		if !s.acct.Disabled {
-			enabled++
+// breakerWindowLocked 丢弃窗口外的结果，返回窗口内该种类的失败数、全部结果数、失败的 distinct 号数。
+// 只统计仍启用、仍存在的号：手动停用后残留的旧失败记录不再参与判断，保证熔断要覆盖 >=2 个
+// 「启用」号——只剩最后一个启用号时绝不用熔断（与 last-account 保护一致）。
+func (p *Pool) breakerWindowLocked(kind string, now time.Time) (fail, total, distinct int) {
+	keep := p.brk.outcomes[:0]
+	ids := map[string]struct{}{}
+	for _, o := range p.brk.outcomes {
+		if now.Sub(o.At) > p.brk.window {
+			continue // 过期：丢掉
+		}
+		s := p.slots[o.ID]
+		if s == nil || s.acct.Disabled {
+			continue // 号已删除 / 已停用：它的历史不再影响全局判断
+		}
+		keep = append(keep, o)
+		total++
+		if o.Fail && o.Kind == kind {
+			fail++
+			ids[o.ID] = struct{}{}
 		}
 	}
-	for id, at := range p.brk.seen[kind] {
-		s := p.slots[id]
-		if s == nil || now.Sub(at) > p.brk.window {
-			delete(p.brk.seen[kind], id)
-			continue
-		}
-		if !s.acct.Disabled {
-			n++
-		}
+	// 清掉可能残留的 nil
+	for i := len(keep); i < len(p.brk.outcomes); i++ {
+		p.brk.outcomes[i] = outcome{}
 	}
-	return n, enabled
+	p.brk.outcomes = keep
+	return fail, total, len(ids)
 }
 
 // Breaker 是全局熔断的当前状态。
@@ -703,9 +946,16 @@ func (p *Pool) Breaker() BreakerView {
 		if !p.trippedLocked(kind, now) {
 			continue
 		}
-		n, enabled := p.breakerCountLocked(kind, now)
+		fail, total, distinct := p.breakerWindowLocked(kind, now)
+		ratio := 0.0
+		if total > 0 {
+			ratio = float64(fail) / float64(total)
+		}
 		v.Open = true
-		v.Kinds = append(v.Kinds, BreakerKind{Kind: kind, Accounts: n, Enabled: enabled, Since: p.brk.since[kind]})
+		v.Kinds = append(v.Kinds, BreakerKind{
+			Kind: kind, Accounts: distinct, Enabled: p.enabledCountLocked(),
+			Failures: fail, Total: total, Ratio: ratio, Since: p.brk.since[kind],
+		})
 	}
 	return v
 }
@@ -714,7 +964,6 @@ func (p *Pool) Breaker() BreakerView {
 // estimated 表示 u.Credits 是按 token 估的（上游没报），对账里单独记。不计请求数、不清失败计数。
 func (p *Pool) Charge(id string, u kiro.Usage, costUSD float64, estimated bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if s := p.slots[id]; s != nil {
 		if estimated {
 			s.estimated += u.Credits
@@ -729,6 +978,8 @@ func (p *Pool) Charge(id string, u kiro.Usage, costUSD float64, estimated bool) 
 		st.CacheRead += int64(u.CacheRead)
 		st.CacheWrite += int64(u.CacheWrite)
 	}
+	p.mu.Unlock()
+	p.saveState()
 }
 
 // Fail 按失败类别给号冷却。返回是否值得换号重试。
@@ -750,36 +1001,48 @@ func (p *Pool) Fail(id string, f kiro.Failure) (retry bool) {
 		if f.RetryAfter > 0 && !s.limits.ResetAt.After(now) {
 			until = now.Add(f.RetryAfter)
 		}
-		p.coolLocked(s, until, "usage limit: "+f.Message)
+		p.coolLocked(s, until, "usage limit: "+kiro.Diagnostic(f.Message))
+	case kiro.ClassSoftBan:
+		// 风控 429：不是普通限流，长冷却并换号（告警在下面统一打）
+		p.coolLocked(s, now.Add(softBanCooldown), "suspicious activity (soft ban): "+kiro.Diagnostic(f.Message))
 	case kiro.ClassThrottle:
 		backoff := min(15*time.Second<<s.strikes, 5*time.Minute)
 		if f.RetryAfter > 0 {
 			backoff = f.RetryAfter // 上游给了窗口就按它，不自己猜
 		}
 		s.strikes = min(s.strikes+1, 8)
-		p.coolLocked(s, now.Add(backoff), "throttled: "+f.Message)
+		p.coolLocked(s, now.Add(backoff), "throttled: "+kiro.Diagnostic(f.Message))
 	case kiro.ClassTransient:
 		if f.Network {
 			p.suspectLocked(FailNetwork, id, now)
 		}
-		p.coolLocked(s, now.Add(10*time.Second), "upstream: "+f.Message)
+		p.coolLocked(s, now.Add(10*time.Second), "upstream: "+kiro.Diagnostic(f.Message))
 	case kiro.ClassAuth:
-		p.coolLocked(s, now.Add(time.Minute), "auth: "+f.Message)
+		p.coolLocked(s, now.Add(time.Minute), "auth: "+kiro.Diagnostic(f.Message))
 	case kiro.ClassForbidden:
 		p.suspectLocked(FailForbidden, id, now)
-		p.coolLocked(s, now.Add(time.Minute), "forbidden: "+f.Message)
+		p.coolLocked(s, now.Add(time.Minute), "forbidden: "+kiro.Diagnostic(f.Message))
 	case kiro.ClassBanned:
-		s.acct.Disabled, s.acct.Note = true, f.Message
+		if !p.disableLocked(s, kiro.Diagnostic(f.Message)) {
+			// 最后一个启用号：不停号，按长时间冷却处理，等上游恢复 / 人工介入
+			p.coolLocked(s, now.Add(softBanCooldown), "account suspended (last enabled; kept): "+kiro.Diagnostic(f.Message))
+		}
 	}
 	banned := f.Class == kiro.ClassBanned
 	p.mu.Unlock()
 	if banned {
-		p.log.Error("account suspended upstream; disabled", "account", id, "msg", f.Message)
+		p.log.Error("account suspended upstream", "account", id, "note", kiro.Diagnostic(f.Message))
+	}
+	if f.Class == kiro.ClassSoftBan {
+		p.log.Error("account soft-banned by upstream risk control; cooling 24h", "account", id, "status", f.Status, "msg", kiro.Diagnostic(f.Message))
+	}
+	p.saveState()
+	if banned {
 		if err := p.save(); err != nil {
 			p.log.Error("save pool", "err", err)
 		}
 	}
-	p.log.Warn("account failure", "account", id, "status", f.Status, "class", f.Class, "msg", f.Message)
+	p.log.Warn("account failure", "account", id, "status", f.Status, "class", f.Class, "msg", kiro.Diagnostic(f.Message))
 	return f.Class != kiro.ClassFatal
 }
 
@@ -897,18 +1160,41 @@ func (p *Pool) refreshFailed(ctx context.Context, id string, s *slot, err error)
 	e, isKiro := errors.AsType[*kiro.Error](err)
 	switch {
 	case isKiro && kiro.Banned(e.Status, []byte(e.Body)):
-		_ = p.SetDisabled(id, true, "account suspended: "+err.Error())
-		p.log.Error("account suspended upstream; disabled", "account", id, "err", err)
+		p.mu.Lock()
+		ok := p.disableLocked(s, "account suspended: "+kiro.Diagnostic(err.Error()))
+		if !ok {
+			p.coolLocked(s, p.now().Add(softBanCooldown), "account suspended (last enabled; kept): "+kiro.Diagnostic(err.Error()))
+		}
+		p.mu.Unlock()
+		p.log.Error("account suspended upstream", "account", id, "err", err)
+		p.saveState()
+		if ok {
+			if serr := p.save(); serr != nil {
+				p.log.Error("save pool", "err", serr)
+			}
+		}
 		return
 	case kiro.IsGone(err):
-		_ = p.SetDisabled(id, true, "sign-in expired: "+err.Error())
+		p.mu.Lock()
+		ok := p.disableLocked(s, "sign-in expired: "+kiro.Diagnostic(err.Error()))
+		if !ok {
+			p.coolLocked(s, p.now().Add(softBanCooldown), "sign-in expired (last enabled; kept): "+kiro.Diagnostic(err.Error()))
+		}
+		p.mu.Unlock()
 		p.log.Error("account disabled", "account", id, "err", err)
+		p.saveState()
+		if ok {
+			if serr := p.save(); serr != nil {
+				p.log.Error("save pool", "err", serr)
+			}
+		}
 		return
 	case kiro.IsReregister(err):
 		p.mu.Lock()
 		s.acct.Reregister = true
 		p.coolLocked(s, p.now().Add(time.Hour), "sign in again: the AWS client registration expired")
 		p.mu.Unlock()
+		p.saveState()
 		if serr := p.save(); serr != nil {
 			p.log.Error("save pool", "err", serr)
 		}
@@ -923,8 +1209,9 @@ func (p *Pool) refreshFailed(ctx context.Context, id string, s *slot, err error)
 			}
 			p.suspectLocked(kind, id, p.now())
 		}
-		p.coolLocked(s, p.now().Add(10*time.Second), "refresh: "+err.Error())
+		p.coolLocked(s, p.now().Add(10*time.Second), "refresh: "+kiro.Diagnostic(err.Error()))
 		p.mu.Unlock()
+		p.saveState()
 		return
 	}
 	kind := FailRefresh
@@ -933,33 +1220,52 @@ func (p *Pool) refreshFailed(ctx context.Context, id string, s *slot, err error)
 	}
 	p.mu.Lock()
 	if p.suspectLocked(kind, id, p.now()) {
-		p.coolLocked(s, p.now().Add(refreshCooldown), "refresh failed (global breaker open, not counted): "+err.Error())
+		p.coolLocked(s, p.now().Add(refreshCooldown), "refresh failed (global breaker open, not counted): "+kiro.Diagnostic(err.Error()))
 		p.mu.Unlock()
+		p.saveState()
 		p.log.Warn("token refresh failed during global breaker; not counted", "account", id, "kind", kind, "err", err)
 		return
 	}
 	s.refreshFails++
 	n := s.refreshFails
-	p.coolLocked(s, p.now().Add(refreshCooldown), fmt.Sprintf("refresh failed (%d/%d): %v", n, maxRefreshFailures, err))
+	p.countStrikeLocked(kind, id, p.now()) // 记录：若之后熔断触发，这些失败要整体回退
+	p.coolLocked(s, p.now().Add(refreshCooldown), fmt.Sprintf("refresh failed (%d/%d): %v", n, maxRefreshFailures, kiro.Diagnostic(err.Error())))
+	disable := false
+	// 最后一个启用号连续刷新失败也不停用：改长冷却并告警，等它能自己恢复。
+	if n >= maxRefreshFailures {
+		if p.disableLocked(s, fmt.Sprintf("refresh failed %d times in a row: %v", n, kiro.Diagnostic(err.Error()))) {
+			disable = true
+		} else {
+			p.coolLocked(s, p.now().Add(softBanCooldown), fmt.Sprintf("refresh failed %d times (last enabled; kept): %v", n, kiro.Diagnostic(err.Error())))
+		}
+	}
 	p.mu.Unlock()
 	if n >= maxRefreshFailures {
-		_ = p.SetDisabled(id, true, fmt.Sprintf("refresh failed %d times in a row: %v", n, err))
-		p.log.Error("account disabled after repeated refresh failures", "account", id, "failures", n, "err", err)
+		p.saveState()
+		if err := p.save(); err != nil {
+			p.log.Error("save pool", "err", err)
+		}
+		if disable {
+			p.log.Error("account disabled after repeated refresh failures", "account", id, "failures", n, "err", err)
+		} else {
+			p.log.Error("last enabled account kept after repeated refresh failures; cooling instead", "account", id, "failures", n, "err", err)
+		}
 		return
 	}
+	p.saveState()
 	p.log.Warn("token refresh failed", "account", id, "failures", n, "of", maxRefreshFailures, "err", err)
 }
 
 // refreshOK 在刷新成功后清零失败计数与 Reregister。
+// 它不清全局熔断的失败历史：刷新成功只说明这个号的凭证能用，
+// 其它号在窗口内的失败记录要靠时间自然过期，不能被一次成功抹掉。
 func (p *Pool) refreshOK(s *slot) {
 	p.mu.Lock()
-	// 刷新成功也说明上游是通的：解除熔断
-	clear(p.brk.seen)
-	clear(p.brk.since)
 	s.refreshFails = 0
 	re := s.acct.Reregister
 	s.acct.Reregister = false
 	p.mu.Unlock()
+	p.saveState()
 	if re {
 		_ = p.save()
 	}

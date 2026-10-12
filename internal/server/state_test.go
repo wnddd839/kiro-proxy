@@ -7,12 +7,32 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"kiro-proxy/internal/config"
 	"kiro-proxy/internal/meter"
 	"kiro-proxy/internal/pool"
 )
+
+func TestSessionStateDoesNotPersistSystemText(t *testing.T) {
+	cacheFile := filepath.Join(t.TempDir(), "cache.json")
+	h := newHarness(t, 1, func(c *config.Config) { c.CacheFile = cacheFile })
+	h.up.stream = kiroPlain
+	secret := "private system with api_key=arbitrary-secret-123"
+	body := `{"model":"claude-sonnet-4.5","system":"` + secret + `","messages":[{"role":"user","content":"hi"}]}`
+	decodeUsage(t, h.post(t, "/v1/messages", body, map[string]string{"X-Session-Id": "private"}))
+	if err := h.s.saveState(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(sessionFile(cacheFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secret) || strings.Contains(string(raw), "arbitrary-secret-123") {
+		t.Fatal("session state persists plaintext system secrets")
+	}
+}
 
 // 重启后：同一会话回到同一号、沿用同一个 conversationId，本地 prompt cache 仍判命中。
 func TestSessionStateSurvivesRestart(t *testing.T) {

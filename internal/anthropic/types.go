@@ -10,16 +10,18 @@ import (
 
 // Request 是 POST /v1/messages 的请求体。
 type Request struct {
-	Model        string          `json:"model"`
-	Messages     []Message       `json:"messages"`
-	System       Content         `json:"system,omitzero"`
-	Tools        []Tool          `json:"tools,omitzero"`
-	ToolChoice   json.RawMessage `json:"tool_choice,omitzero"`
-	MaxTokens    int             `json:"max_tokens,omitzero"`
-	Stream       bool            `json:"stream,omitzero"`
-	Thinking     *Thinking       `json:"thinking,omitzero"`
-	OutputConfig *OutputConfig   `json:"output_config,omitzero"`
-	Metadata     *Metadata       `json:"metadata,omitzero"`
+	Model         string          `json:"model"`
+	Messages      []Message       `json:"messages"`
+	System        Content         `json:"system,omitzero"`
+	Tools         []Tool          `json:"tools,omitzero"`
+	ToolChoice    json.RawMessage `json:"tool_choice,omitzero"`
+	MaxTokens     int             `json:"max_tokens,omitzero"`
+	StopSequences []string        `json:"stop_sequences,omitzero"`
+	Temperature   *float64        `json:"temperature,omitzero"`
+	Stream        bool            `json:"stream,omitzero"`
+	Thinking      *Thinking       `json:"thinking,omitzero"`
+	OutputConfig  *OutputConfig   `json:"output_config,omitzero"`
+	Metadata      *Metadata       `json:"metadata,omitzero"`
 	// CacheControl 是顶层的自动缓存断点：落在最后一块上，随对话增长后移。只用于本地计量。
 	CacheControl *CacheControl `json:"cache_control,omitzero"`
 	// PromptCacheKey 不是 Anthropic 字段；OpenAI 兼容客户端会带，用作会话键。
@@ -162,6 +164,8 @@ type ResponseBlock struct {
 // Usage 是 token 计数。Credits 是 Kiro 实际扣点（非 Anthropic 标准字段）。
 // cache_creation_input_tokens = cache_creation 里两项之和，与 Anthropic 一致。
 type Usage struct {
+	HiddenTokens             int            `json:"hidden_tokens"`
+	HiddenChargedUSD         float64        `json:"hidden_tokens_charged_usd"`
 	InputTokens              int            `json:"input_tokens"`
 	OutputTokens             int            `json:"output_tokens"`
 	CacheReadInputTokens     int            `json:"cache_read_input_tokens"`

@@ -120,12 +120,6 @@ func orPrice(pr orPricing) Price {
 		CacheWrite:   perM(pr.CacheWrite),
 		CacheWrite1h: perM(pr.CacheWrite1h),
 	}
-	if p.CacheWrite == 0 {
-		p.CacheWrite = p.Input // 挂牌不报写入价：自动缓存、写入不加价
-	}
-	if p.CacheRead == 0 {
-		p.CacheRead = p.Input
-	}
 	// 挂牌不报 1h 写入价时不在这里推导：Claude 的由 Price.filled 按 max(2×input, CacheWrite) 补，
 	// 其它模型没有 1h 缓存，按 5m 写入价（不多收）
 	for _, o := range pr.Overrides {

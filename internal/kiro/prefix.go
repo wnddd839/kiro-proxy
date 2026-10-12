@@ -10,20 +10,28 @@ import (
 // PrefixCheck 对比相邻请求的消息序列。Tools 在协议中挂在 current 上，单独比较；
 // 从 current 移到 history 的位置不属于正文变化。文件本身保留完整原始请求。
 type PrefixCheck struct {
-	PreviousAccount    string `json:"previous_account,omitzero"`
-	Account            string `json:"account,omitzero"`
-	SameAccount        bool   `json:"same_account"`
-	SameConversation   bool   `json:"same_conversation"`
-	SameModel          bool   `json:"same_model"`
-	SameParameters     bool   `json:"same_parameters"`
-	SameTools          bool   `json:"same_tools"`
-	MessagesExtend     bool   `json:"messages_extend"`
-	PreviousBytes      int    `json:"previous_message_bytes"`
-	CurrentBytes       int    `json:"current_message_bytes"`
-	CommonBytes        int    `json:"common_message_bytes"`
-	FirstDifferentByte *int   `json:"first_different_byte,omitzero"`
-	PreviousHash       string `json:"previous_message_sha256"`
-	CurrentHash        string `json:"current_message_sha256"`
+	PreviousAccount    string       `json:"previous_account,omitzero"`
+	Account            string       `json:"account,omitzero"`
+	SameAccount        bool         `json:"same_account"`
+	SameConversation   bool         `json:"same_conversation"`
+	SameModel          bool         `json:"same_model"`
+	SameParameters     bool         `json:"same_parameters"`
+	SameTools          bool         `json:"same_tools"`
+	MessagesExtend     bool         `json:"messages_extend"`
+	PreviousBytes      int          `json:"previous_message_bytes"`
+	CurrentBytes       int          `json:"current_message_bytes"`
+	CommonBytes        int          `json:"common_message_bytes"`
+	FirstDifferentByte *int         `json:"first_different_byte,omitzero"`
+	PreviousHash       string       `json:"previous_message_sha256"`
+	CurrentHash        string       `json:"current_message_sha256"`
+	DifferentBlock     *PrefixBlock `json:"first_different_block,omitzero"`
+}
+
+type PrefixBlock struct {
+	Index   int    `json:"index"`
+	Role    string `json:"role"`
+	Type    string `json:"type"`
+	Preview string `json:"preview"`
 }
 
 func prefixView(payload []byte) (body, []byte, []byte, error) {
@@ -79,6 +87,33 @@ func CheckPrefix(previous, current []byte) (PrefixCheck, error) {
 		PreviousHash: fmt.Sprintf("%x", sha256.Sum256(old)), CurrentHash: fmt.Sprintf("%x", sha256.Sum256(next))}
 	if !check.MessagesExtend {
 		check.FirstDifferentByte = &common
+		oldLines, nextLines := bytes.Split(old, []byte{'\n'}), bytes.Split(next, []byte{'\n'})
+		for i := 0; i < max(len(oldLines), len(nextLines)); i++ {
+			var x, y []byte
+			if i < len(oldLines) {
+				x = oldLines[i]
+			}
+			if i < len(nextLines) {
+				y = nextLines[i]
+			}
+			if bytes.Equal(x, y) {
+				continue
+			}
+			var e entry
+			_ = json.Unmarshal(y, &e)
+			role, text := "assistant", ""
+			if e.User != nil {
+				role, text = "user", e.User.Content
+			} else if e.Asst != nil {
+				text = e.Asst.Content
+			}
+			preview := []rune(Redact(text))
+			if len(preview) > 80 {
+				preview = preview[:80]
+			}
+			check.DifferentBlock = &PrefixBlock{Index: i, Role: role, Type: "text", Preview: string(preview)}
+			break
+		}
 	}
 	return check, nil
 }

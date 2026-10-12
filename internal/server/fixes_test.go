@@ -353,6 +353,10 @@ func TestAbortWithoutMeteringEstimatesCredits(t *testing.T) {
 	if !e.Aborted || !e.CreditsEstimated || e.Credits <= 0 || e.UpstreamUSD <= 0 || e.CostUSD <= 0 || v.Totals.Aborted != 1 {
 		t.Fatalf("aborted entry %+v", e)
 	}
+	account, _ := h.pool.Get(e.Account)
+	if e.Status != statusClientClosed || account.Stats.Errors != 0 || !account.CooldownUntil.IsZero() || account.InFlight != 0 {
+		t.Fatalf("client cancellation harmed account: entry=%+v account=%+v", e, account)
+	}
 }
 
 // 两本账：每笔记对下游收费与上游成本；亏的笔单独计。
@@ -525,13 +529,13 @@ func TestChat403RefreshOnlyForTokenErrors(t *testing.T) {
 	}
 }
 
-// 上游报了 tokenUsage：保留 Kiro 输入，取最后一次报告，不累加也不重复加基线。
+// 上游报了 tokenUsage：报告输入含 Kiro 基线，切出隐藏账；取最后一次报告，不累加也不重复加基线。
 func TestReportedConservative(t *testing.T) {
 	h := newHarness(t, 1, nil)
 	h.up.stream = func(string) []byte {
 		b := frame("assistantResponseEvent", `{"content":"ok"}`)
-		b = append(b, frame("metadataEvent", `{"tokenUsage":{"uncachedInputTokens":3000,"cacheReadInputTokens":9000,"outputTokens":1}}`)...)
-		b = append(b, frame("metadataEvent", fmt.Sprintf(`{"tokenUsage":{"uncachedInputTokens":3000,"cacheReadInputTokens":%d,"outputTokens":2}}`, 9000))...)
+		b = append(b, frame("metadataEvent", `{"tokenUsage":{"uncachedInputTokens":7052,"cacheReadInputTokens":9000,"outputTokens":1}}`)...)
+		b = append(b, frame("metadataEvent", fmt.Sprintf(`{"tokenUsage":{"uncachedInputTokens":7052,"cacheReadInputTokens":%d,"outputTokens":2}}`, 9000))...)
 		return b
 	}
 	u := decodeUsage(t, h.post(t, "/v1/messages", convo("x"), nil))
@@ -539,9 +543,10 @@ func TestReportedConservative(t *testing.T) {
 		t.Fatalf("usage %+v, want input 3000, cache_read 9000, output 2", u)
 	}
 	e := waitRequests(t, h, usage.Query{}, 1).Entries[0]
-	wantCredits := meter.EstimateCredits(meter.CreditRateOf(e.Model, nil), turn.Usage{Input: 3000, CacheRead: 9000, Output: 2}, 0)
-	if e.Input != 3000 || e.CacheRead != 9000 || e.Credits != wantCredits {
-		t.Fatalf("reported input should not add another Kiro baseline: %+v", e)
+	hidden := kiro.HiddenTokens("claude-sonnet-4.5")
+	wantCredits := meter.EstimateCredits(meter.CreditRateOf(e.Model, nil), turn.Usage{Input: 3000, CacheRead: 9000, Output: 2}, hidden)
+	if e.Input != 3000 || e.CacheRead != 9000 || e.HiddenTokens != hidden || e.Credits != wantCredits {
+		t.Fatalf("reported input hidden carve wrong: %+v want hidden %d credits %v", e, hidden, wantCredits)
 	}
 }
 
@@ -583,7 +588,7 @@ func TestStreamStartNotAboveEnd(t *testing.T) {
 	}
 	_ = json.NewDecoder(res.Body).Decode(&ct)
 	for _, scale := range []float64{0.52, 1.0, 1.9} {
-		content := int(float64(ct.InputTokens-kiro.HiddenTokens("claude-sonnet-4.5")) * scale)
+		content := int(float64(ct.InputTokens) * scale)
 		h.up.stream = func(string) []byte {
 			b := frame("assistantResponseEvent", `{"content":"hello world"}`)
 			b = append(b, frame("contextUsageEvent", fmt.Sprintf(`{"contextUsagePercentage":%v}`, float64(content+kiro.HiddenTokens("claude-sonnet-4.5"))/2000))...)

@@ -92,19 +92,21 @@ func (s *Server) refreshPrices(ctx context.Context) error {
 
 // modelRow 是管理台模型表的一行：上游模型信息 + 倍率 + 生效单价。
 type modelRow struct {
-	ID            string      `json:"id"`
-	Name          string      `json:"name"`
-	Context       int         `json:"context"`
-	Output        int         `json:"output"`
-	Images        bool        `json:"images"`
-	Multiplier    float64     `json:"multiplier,omitzero"`
-	RateUnit      string      `json:"rate_unit,omitzero"`
-	Description   string      `json:"description,omitzero"`
-	Default       bool        `json:"default,omitzero"`
-	PromptCaching any         `json:"prompt_caching,omitzero"`
-	Price         meter.Price `json:"price"`
-	Priced        bool        `json:"priced"` // false = 未匹配到价格，按 fallback 计
-	CreditUSD     float64     `json:"credit_usd,omitzero"`
+	ID                string      `json:"id"`
+	Name              string      `json:"name"`
+	Context           int         `json:"context"`
+	Output            int         `json:"output"`
+	Images            bool        `json:"images"`
+	Multiplier        float64     `json:"multiplier,omitzero"`
+	RateUnit          string      `json:"rate_unit,omitzero"`
+	Description       string      `json:"description,omitzero"`
+	Default           bool        `json:"default,omitzero"`
+	PromptCaching     any         `json:"prompt_caching,omitzero"`
+	Price             meter.Price `json:"price"`
+	Priced            bool        `json:"priced"` // false = 未匹配到价格，按 fallback 计
+	CreditUSD         float64     `json:"credit_usd,omitzero"`
+	HiddenTokens      int         `json:"hidden_tokens"`
+	HiddenCalibration string      `json:"hidden_calibration"`
 }
 
 func (s *Server) modelRows() []modelRow {
@@ -116,6 +118,13 @@ func (s *Server) modelRows() []modelRow {
 			ID: m.ID, Name: m.Name, Context: m.Context, Output: m.Output, Images: m.Images,
 			Multiplier: m.Multiplier, RateUnit: m.RateUnit, Description: m.Description, Default: m.Default,
 			Price: p, Priced: ok,
+			HiddenTokens: s.cfg.HiddenTokensOf(m.ID), HiddenCalibration: "未校准",
+		}
+		if _, configured := s.cfg.HiddenTokens[meter.CanonModel(m.ID)]; configured {
+			r.HiddenCalibration = "配置覆盖（需实测依据）"
+		}
+		if m.ID == "claude-sonnet-4.5" && r.HiddenTokens == 4052 {
+			r.HiddenCalibration = "已校准"
 		}
 		if m.PromptCaching != nil {
 			r.PromptCaching = m.PromptCaching

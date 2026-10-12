@@ -114,7 +114,7 @@ func TestAnthropic1hBilled(t *testing.T) {
 		t.Fatalf("journal 1h = %d / %d, want %d", e.CacheWrite1h, v.Totals.CacheWrite1h, u.CacheWrite)
 	}
 	// sonnet 4.5：输入 $3、输出 $15、1h 写入 $6 / M
-	want := (float64(u.Input)*3 + float64(u.Output)*15 + float64(u.CacheWrite)*6) / 1e6
+	want := (float64(u.Input+e.HiddenTokens)*3 + float64(u.Output)*15 + float64(u.CacheWrite)*6) / 1e6
 	if math.Abs(e.CostUSD-want) > 1e-9 {
 		t.Fatalf("cost = %v, want %v (1h at 2x)", e.CostUSD, want)
 	}
@@ -156,7 +156,8 @@ func TestReportedCacheWriteKeeps1hShare(t *testing.T) {
 	h := newHarness(t, 1, func(c *config.Config) { c.CacheMode = meter.ModeExplicit })
 	h.up.stream = func(string) []byte {
 		b := frame("assistantResponseEvent", `{"content":"ok"}`)
-		return append(b, frame("metadataEvent", `{"tokenUsage":{"uncachedInputTokens":10,"outputTokens":2,"cacheWriteInputTokens":3000}}`)...)
+		// 上报输入含 Kiro 基线：客户端 10 + hidden 4052。
+		return append(b, frame("metadataEvent", `{"tokenUsage":{"uncachedInputTokens":4062,"outputTokens":2,"cacheWriteInputTokens":3000}}`)...)
 	}
 	u := decodeFull(t, h.post(t, "/v1/messages", cached(convo("x"), "1h"), nil))
 	if u.CacheWrite != 3000 || u.CacheCreation.E1h != 3000 {

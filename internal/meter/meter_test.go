@@ -95,29 +95,23 @@ func TestImage(t *testing.T) {
 }
 
 func TestCalibrate(t *testing.T) {
-	u := turn.Usage{Input: 4100, KiroInput: 4000, CacheRead: 800, CacheWrite: 100, Output: 50, Reasoning: 20, Credits: 0.5}
-	// 上游内容 840 = 本地 1050 × 0.8
-	got := Calibrate(u, 4000+840, 4000, false)
-	want := turn.Usage{Input: 4080, KiroInput: 4000, CacheRead: 640, CacheWrite: 80, Output: 40, Reasoning: 16, Credits: 0.5}
+	u := turn.Usage{Input: 100, KiroInput: 4000, CacheRead: 800, CacheWrite: 100, Output: 50, Reasoning: 20, Credits: 0.5}
+	got := Calibrate(u, 4850, 4000)
+	want := turn.Usage{Input: 80, KiroInput: 4000, CacheRead: 640, CacheWrite: 80, Output: 50, Reasoning: 20, Credits: 0.5}
 	if got != want {
 		t.Fatalf("calibrated = %+v, want %+v", got, want)
 	}
-	if got.PromptTokens()+got.Output != 4840 {
-		t.Fatalf("total %d, want upstream 4840 including Kiro input", got.PromptTokens()+got.Output)
+	odd := Calibrate(turn.Usage{Input: 3, CacheRead: 3, CacheWrite: 3, Output: 3}, 13, 0)
+	if odd.Input != 3 || odd.Output != 3 {
+		t.Fatalf("rounding invented input or scaled output: %+v", odd)
 	}
-	// 舍入差归到普通输入，总量始终等于上游
-	odd := Calibrate(turn.Usage{Input: 3, CacheRead: 3, CacheWrite: 3, Output: 3}, 13, 0, false)
-	if odd.PromptTokens()+odd.Output != 13 || odd.Input < 0 {
-		t.Fatalf("rounding = %+v", odd)
-	}
-	// 比例离谱、上游不足基线、本地为空：不动
-	for _, tc := range []struct{ up, hidden int }{{4000 + 5000, 4000}, {4000 + 100, 4000}, {3000, 4000}} {
-		if got := Calibrate(u, tc.up, tc.hidden, false); got != u {
-			t.Errorf("Calibrate(%d,%d) = %+v, want unchanged", tc.up, tc.hidden, got)
+	for _, up := range []int{9000, 4100, 3000} {
+		if got := Calibrate(u, up, 4000); got != u {
+			t.Errorf("invalid ratio: %+v", got)
 		}
 	}
-	if got := Calibrate(turn.Usage{}, 5000, 4000, false); got != (turn.Usage{}) {
-		t.Errorf("empty = %+v", got)
+	if got := Calibrate(turn.Usage{}, 5000, 4000); got != (turn.Usage{}) {
+		t.Errorf("empty: %+v", got)
 	}
 }
 
@@ -234,7 +228,7 @@ func TestPricer(t *testing.T) {
 	}
 	for model, in := range map[string]float64{
 		"claude-opus-4.1": 15, "claude-opus-4": 15, "claude-opus-4.5": 5, "claude-opus-5.5": 4,
-		"claude-opus-4.9": 5, // 未知版本走家族条目，不被 claude-opus-4 吃掉
+		"claude-opus-4.9": 15, // 未知版本走家族条目，不被 claude-opus-4 吃掉
 		"claude-sonnet-5": 2, "claude-sonnet-4": 3, "claude-sonnet-4.5-thinking": 3,
 		"deepseek-3.2": 0.28, "deepseek/deepseek-v3.2": 0.28, "Qwen3-Coder-Next": 0.12,
 	} {
@@ -317,7 +311,7 @@ func TestParseOpenRouter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := or["deepseek-3.2"]; d.Input != 0.28 || d.Output != 0.42 || d.CacheRead != 0.028 || d.CacheWrite != 0.28 {
+	if d := or["deepseek-3.2"]; d.Input != 0.28 || d.Output != 0.42 || d.CacheRead != 0.028 || d.CacheWrite != 0 {
 		t.Errorf("deepseek-3.2 = %+v", d)
 	}
 	if q := or["qwen3-coder-next"]; q.Input != 0.12 || q.Output != 0.8 {

@@ -47,6 +47,7 @@ const legacyConfig = "kiro-go.json"
 func run() error {
 	cfgPath := flag.String("config", "kiro-proxy.json", "config file (missing file = defaults)")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	allowInsecure := flag.Bool("allow-insecure-listen", false, "allow a non-loopback listener with no downstream api_keys (dangerous)")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("kiro-proxy", version)
@@ -58,11 +59,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	cfg.AllowInsecureListen = cfg.AllowInsecureListen || *allowInsecure
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
 		return fmt.Errorf("log_level: %w", err)
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	log = kiro.SafeLogger(log) // 日志一律经过脱敏的 handler
 	if legacy {
 		log.Warn("using legacy config file; rename it to kiro-proxy.json", "file", path)
 	}
@@ -102,16 +105,13 @@ func serve(cfg config.Config, p *pool.Pool, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if host, _, err := net.SplitHostPort(cfg.Listen); err == nil && len(cfg.APIKeys) == 0 && !keysConfigured(cfg.KeysFile) {
-		if ip := net.ParseIP(host); host == "" || (ip != nil && !ip.IsLoopback()) {
-			log.Warn("listening beyond loopback with no api_keys: anyone on the network can spend the pool", "listen", cfg.Listen)
-		}
-	}
-
 	if host, _, err := net.SplitHostPort(cfg.Listen); err == nil && cfg.AdminToken == "" {
 		if ip := net.ParseIP(host); host == "" || (ip != nil && !ip.IsLoopback()) {
 			log.Warn("listening beyond loopback with no admin_token: /admin only answers requests from this machine", "listen", cfg.Listen)
 		}
+	}
+	if err := guardListen(cfg, hasDownstreamKeys(cfg), cfg.AllowInsecureListen, log); err != nil {
+		return err
 	}
 
 	ks, err := keys.Open(cfg.KeysFile, nil)
@@ -143,11 +143,7 @@ func serve(cfg config.Config, p *pool.Pool, log *slog.Logger) error {
 
 	// 请求不继承信号 ctx：Ctrl-C 时在途的流不会被立刻取消（那会记成中断的半截账），
 	// 而是由 Shutdown 等它们跑完。
-	httpSrv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpSrv := newHTTPServer(cfg, srv.Handler())
 	errc := make(chan error, 1)
 	go func() { errc <- httpSrv.ListenAndServe() }()
 	log.Info("kiro-proxy listening", "version", version, "addr", cfg.Listen, "accounts", p.Len(), "conversation_mode", cfg.ConversationMode,
@@ -180,6 +176,46 @@ func serve(cfg config.Config, p *pool.Pool, log *slog.Logger) error {
 
 // shutdownGrace 是退出时等在途请求跑完的上限。长 thinking 的流可能要一两分钟。
 const shutdownGrace = 2 * time.Minute
+
+// defaultReadTimeout 是下游 HTTP 读超时（请求行 / 头 / body 全读期限）。
+const defaultReadTimeout = 30 * time.Second
+
+// newHTTPServer 建下游 HTTP 服务，统一设置读超时。ReadTimeout 覆盖整个请求读取并兜底
+// ReadHeaderTimeout；body 由 handler 自己限制（maxBody）。
+func newHTTPServer(cfg config.Config, handler http.Handler) *http.Server {
+	read := time.Duration(cfg.ServerReadTimeout)
+	if read <= 0 {
+		read = defaultReadTimeout
+	}
+	header := 10 * time.Second
+	if read < header {
+		header = read
+	}
+	return &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           handler,
+		ReadTimeout:       read,
+		ReadHeaderTimeout: header,
+		// 显式设置空闲超时：否则 net/http 会把 keep-alive 空闲连接也用 ReadTimeout 兜底，
+		// 让复用连接在 30s 后莫名断开。长 SSE 流不受 IdleTimeout 影响（只作用于请求间隔）。
+		IdleTimeout: 60 * time.Second,
+	}
+}
+
+// guardListen 在没有下游 key 却监听非回环地址时拒绝启动：否则整网都能花号池。
+// 只有显式 allow 覆盖才继续，并打醒目警告。
+func guardListen(cfg config.Config, hasKeys, allow bool, log *slog.Logger) error {
+	if !cfg.UnsafeListen(hasKeys) {
+		return nil
+	}
+	if !allow {
+		return fmt.Errorf("listen %q is reachable from the network but no downstream api_keys are configured; "+
+			"set api_keys/keys_file or keep the listener on loopback, or set allow_insecure_listen=true to override", cfg.Listen)
+	}
+	log.Warn("SECURITY: listening beyond loopback with no api_keys; anyone who can reach this address can spend the pool",
+		"listen", cfg.Listen, "override", "allow_insecure_listen")
+	return nil
+}
 
 // consoleHost 把监听地址变成浏览器能打开的 host:port：0.0.0.0 / :: / 空 → 127.0.0.1。
 func consoleHost(listen string) string {
@@ -294,10 +330,67 @@ func promptCallbacks(ctx context.Context, manual chan<- kiro.Callback) {
 	}
 }
 
-// keysConfigured 报告 key 库里是否有 key：有就会校验下游。
+// hasDownstreamKeys 报告是否配了下游 key：config.api_keys 里非空白的一条，或 keys_file 里
+// 有可用记录。空白 api_keys 不算（config.Validate 也会拒绝），避免 api_keys:[""] 绕过启动保护。
+func hasDownstreamKeys(cfg config.Config) bool {
+	for _, k := range cfg.APIKeys {
+		if strings.TrimSpace(k) != "" {
+			return true
+		}
+	}
+	return keysConfigured(cfg.KeysFile)
+}
+
+// keysConfigured 报告 key 库里是否有可用的下游 key：有就会校验下游。只读探测，不触发
+// keys.Open 的明文→哈希迁移（启动门槛不能改写用户密钥文件）。要求至少一条带有效
+// 凭据（secret_sha256 或明文 secret）、未禁用、未过期的 key；空库或全是空/停用/过期
+// 记录都算没有 key（此时非回环监听会把号池开放给整网）。
 func keysConfigured(path string) bool {
-	ks, err := keys.Open(path, nil)
-	return err == nil && ks.Len() > 0
+	if path == "" {
+		return false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var f struct {
+		Keys []struct {
+			Secret    string    `json:"secret"`
+			SHA256    string    `json:"secret_sha256"`
+			Disabled  bool      `json:"disabled"`
+			ExpiresAt time.Time `json:"expires_at"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return false
+	}
+	now := time.Now()
+	for _, k := range f.Keys {
+		if k.Disabled {
+			continue
+		}
+		if !k.ExpiresAt.IsZero() && !now.Before(k.ExpiresAt) {
+			continue
+		}
+		if k.Secret != "" || validHash(k.SHA256) {
+			return true
+		}
+	}
+	return false
+}
+
+// validHash 检查 secret_sha256 是否是 64 位十六进制。
+func validHash(h string) bool {
+	if len(h) != 64 {
+		return false
+	}
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // configPath 在没显式指定 -config、新文件不存在而旧名 kiro-go.json 存在时改用旧名。

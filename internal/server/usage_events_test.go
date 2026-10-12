@@ -19,18 +19,39 @@ import (
 	"kiro-proxy/internal/usage"
 )
 
+// wireUsage 是响应 usage 的线上形状，含独立的隐藏 token 账。
+type wireUsage struct {
+	usageBody
+	HiddenTokens int `json:"hidden_tokens"`
+}
+
+func decodeWire(t *testing.T, res *http.Response) wireUsage {
+	t.Helper()
+	if res.StatusCode != 200 {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("status %d: %s", res.StatusCode, b)
+	}
+	var msg struct{ Usage wireUsage }
+	if err := json.NewDecoder(res.Body).Decode(&msg); err != nil {
+		t.Fatal(err)
+	}
+	return msg.Usage
+}
+
 func TestFirstReportedStreamUsageDoesNotOverbill(t *testing.T) {
+	hidden := kiro.HiddenTokens("claude-sonnet-4.5")
 	for _, mode := range []string{kiro.ReportedConservative, kiro.ReportedRaw, kiro.ReportedSum} {
 		for _, input := range []int{0, 10} {
 			t.Run(fmt.Sprintf("%s/input=%d", mode, input), func(t *testing.T) {
 				h := newHarness(t, 1, func(c *config.Config) { c.ReportedUsage = mode })
 				h.up.stream = func(string) []byte {
 					b := frame("assistantResponseEvent", `{"content":"ok"}`)
-					return append(b, frame("metadataEvent", fmt.Sprintf(`{"tokenUsage":{"uncachedInputTokens":%d,"cacheReadInputTokens":6000,"outputTokens":3}}`, input))...)
+					// 上游报的输入是整段上下文：客户端 input 之外还含 Kiro 隐藏基线。
+					return append(b, frame("metadataEvent", fmt.Sprintf(`{"tokenUsage":{"uncachedInputTokens":%d,"cacheReadInputTokens":6000,"outputTokens":3}}`, input+hidden))...)
 				}
 				body := strings.Replace(convo("hi"), `"messages"`, `"stream":true,"messages"`, 1)
 				res := h.post(t, "/v1/messages", body, nil)
-				var start, end usageBody
+				var start, end wireUsage
 				sawStart, sawEnd := false, false
 				sc := bufio.NewScanner(res.Body)
 				for sc.Scan() {
@@ -40,8 +61,8 @@ func TestFirstReportedStreamUsageDoesNotOverbill(t *testing.T) {
 					}
 					var ev struct {
 						Type    string
-						Message struct{ Usage usageBody }
-						Usage   usageBody
+						Message struct{ Usage wireUsage }
+						Usage   wireUsage
 					}
 					if err := json.Unmarshal([]byte(data), &ev); err != nil {
 						t.Fatal(err)
@@ -61,8 +82,8 @@ func TestFirstReportedStreamUsageDoesNotOverbill(t *testing.T) {
 				if end.Input > 0 {
 					mergedInput = end.Input
 				}
-				if start.Input > end.Input || mergedInput != input {
-					t.Fatalf("stream overbilled: start=%+v end=%+v merged=%d want=%d", start, end, mergedInput, input)
+				if start.Input > end.Input || mergedInput != input || end.HiddenTokens != hidden {
+					t.Fatalf("stream overbilled: start=%+v end=%+v merged=%d want=%d hidden_want=%d", start, end, mergedInput, input, hidden)
 				}
 			})
 		}
@@ -80,14 +101,14 @@ func TestReportedOutputSurvivesContextCalibration(t *testing.T) {
 		t.Fatal(err)
 	}
 	hidden := kiro.HiddenTokens("claude-sonnet-4.5")
-	upstream := hidden + (count.Input-hidden)*4/5 + 11
+	upstream := hidden + count.Input*4/5 + 11
 	h.up.stream = func(string) []byte {
 		b := frame("assistantResponseEvent", `{"content":"hello world"}`)
 		b = append(b, frame("metadataEvent", `{"tokenUsage":{"outputTokens":11}}`)...)
 		return append(b, frame("contextUsageEvent", fmt.Sprintf(`{"contextUsagePercentage":%v}`, float64(upstream)/2000))...)
 	}
 	u := decodeUsage(t, h.post(t, "/v1/messages", body, nil))
-	if u.Output != 11 || u.Input+u.CacheRead+u.CacheWrite+u.Output != upstream {
+	if u.Output != 11 || u.Input+u.CacheRead+u.CacheWrite+u.Output < upstream-hidden-2 || u.Input+u.CacheRead+u.CacheWrite+u.Output > upstream-hidden {
 		t.Fatalf("reported output rescaled: usage=%+v upstream=%d", u, upstream)
 	}
 }
@@ -103,15 +124,134 @@ func TestIgnoredReportsStillCalibrateContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	hidden := kiro.HiddenTokens("claude-sonnet-4.5")
-	upstream := hidden + (count.Input-hidden+meter.Count("hello world"))*4/5
+	upstream := hidden + (count.Input+meter.Count("hello world"))*4/5
 	h.up.stream = func(string) []byte {
 		b := frame("assistantResponseEvent", `{"content":"hello world"}`)
 		b = append(b, frame("metadataEvent", `{"tokenUsage":{"uncachedInputTokens":999999,"outputTokens":9999}}`)...)
 		return append(b, frame("contextUsageEvent", fmt.Sprintf(`{"contextUsagePercentage":%v}`, float64(upstream)/2000))...)
 	}
 	u := decodeUsage(t, h.post(t, "/v1/messages", body, nil))
-	if u.Input < hidden || u.Output == 9999 || u.Input+u.CacheRead+u.CacheWrite+u.Output != upstream {
+	if u.Input != 0 || u.Output == 9999 || u.Input+u.CacheRead+u.CacheWrite+u.Output < upstream-hidden-2 || u.Input+u.CacheRead+u.CacheWrite+u.Output > upstream-hidden {
 		t.Fatalf("ignore failed to calibrate local usage: usage=%+v upstream=%d", u, upstream)
+	}
+}
+
+// 上报的输入是整段上下文：客户端 input 应为 total−hidden，隐藏账独立记在 hidden_tokens / ledger。
+func TestReportedInputCarvesHiddenSeparately(t *testing.T) {
+	hidden := kiro.HiddenTokens("claude-sonnet-4.5")
+	for _, mode := range []string{kiro.ReportedConservative, kiro.ReportedRaw} {
+		t.Run(mode, func(t *testing.T) {
+			h := newHarness(t, 1, func(c *config.Config) { c.ReportedUsage = mode })
+			const clientInput = 1234
+			h.up.stream = func(string) []byte {
+				b := frame("assistantResponseEvent", `{"content":"ok"}`)
+				return append(b, frame("metadataEvent", fmt.Sprintf(`{"tokenUsage":{"uncachedInputTokens":%d,"cacheReadInputTokens":700,"cacheWriteInputTokens":300,"outputTokens":5}}`, clientInput+hidden))...)
+			}
+			u := decodeWire(t, h.post(t, "/v1/messages", convo("hi"), nil))
+			if u.Input != clientInput || u.CacheRead != 700 || u.CacheWrite != 300 || u.HiddenTokens != hidden {
+				t.Fatalf("carve wrong: %+v want input=%d read=700 write=300 hidden=%d", u, clientInput, hidden)
+			}
+			if u.Input+u.CacheRead+u.CacheWrite+u.HiddenTokens != clientInput+700+300+hidden {
+				t.Fatalf("total not preserved: %+v", u)
+			}
+			e := waitRequests(t, h, usage.Query{}, 1).Entries[0]
+			if e.Input != clientInput || e.CacheRead != 700 || e.CacheWrite != 300 || e.HiddenTokens != hidden {
+				t.Fatalf("ledger carve wrong: %+v", e)
+			}
+			wantHidden := float64(hidden) * 3.0 / 1e6
+			if math.Abs(e.HiddenChargedUSD-wantHidden) > 1e-12 {
+				t.Fatalf("hidden not charged separately: %v want %v", e.HiddenChargedUSD, wantHidden)
+			}
+		})
+	}
+}
+
+// 上报总量小于隐藏基线：隐藏取 min，客户端输入不得为负，总量守恒。
+func TestReportedInputTinyRequestClampsHidden(t *testing.T) {
+	h := newHarness(t, 1, func(c *config.Config) { c.ReportedUsage = kiro.ReportedConservative })
+	const reported = 100 // 远小于 hidden
+	h.up.stream = func(string) []byte {
+		b := frame("assistantResponseEvent", `{"content":"ok"}`)
+		return append(b, frame("metadataEvent", fmt.Sprintf(`{"tokenUsage":{"uncachedInputTokens":%d,"outputTokens":2}}`, reported))...)
+	}
+	u := decodeWire(t, h.post(t, "/v1/messages", convo("hi"), nil))
+	if u.HiddenTokens != reported || u.Input != 0 || u.CacheRead != 0 || u.CacheWrite != 0 {
+		t.Fatalf("tiny carve: %+v want hidden=%d, client 0", u, reported)
+	}
+	e := waitRequests(t, h, usage.Query{}, 1).Entries[0]
+	if e.HiddenTokens != reported || e.Input != 0 {
+		t.Fatalf("tiny ledger: %+v", e)
+	}
+}
+
+// 配置覆盖隐藏基线、hidden_tokens_billing=off：隐藏仍分离计量，只是不计费。
+func TestReportedInputHiddenOverrideAndBillingOff(t *testing.T) {
+	const hidden = 4321
+	h := newHarness(t, 1, func(c *config.Config) {
+		c.ReportedUsage = kiro.ReportedConservative
+		c.HiddenTokens = map[string]int{"claude-sonnet-4.5": hidden}
+		c.HiddenTokensBilling = "off"
+	})
+	const clientInput = 2000
+	h.up.stream = func(string) []byte {
+		b := frame("assistantResponseEvent", `{"content":"ok"}`)
+		return append(b, frame("metadataEvent", fmt.Sprintf(`{"tokenUsage":{"uncachedInputTokens":%d,"outputTokens":1}}`, clientInput+hidden))...)
+	}
+	u := decodeWire(t, h.post(t, "/v1/messages", convo("hi"), nil))
+	if u.Input != clientInput || u.HiddenTokens != hidden {
+		t.Fatalf("override carve: %+v want input=%d hidden=%d", u, clientInput, hidden)
+	}
+	e := waitRequests(t, h, usage.Query{}, 1).Entries[0]
+	if e.HiddenTokens != hidden || e.HiddenChargedUSD != 0 {
+		t.Fatalf("billing off should keep hidden count but zero usd: %+v", e)
+	}
+}
+
+// 流式：settled_usage 的独立隐藏账与 message_delta 一致，且不高于 message_start 估算。
+func TestReportedInputStreamHiddenSettled(t *testing.T) {
+	hidden := kiro.HiddenTokens("claude-sonnet-4.5")
+	h := newHarness(t, 1, func(c *config.Config) { c.ReportedUsage = kiro.ReportedConservative })
+	const clientInput = 5000
+	h.up.stream = func(string) []byte {
+		b := frame("assistantResponseEvent", `{"content":"ok"}`)
+		return append(b, frame("metadataEvent", fmt.Sprintf(`{"tokenUsage":{"uncachedInputTokens":%d,"cacheReadInputTokens":1500,"outputTokens":2}}`, clientInput+hidden))...)
+	}
+	body := strings.Replace(convo("hi"), `"max_tokens":100`, `"max_tokens":100,"stream":true`, 1)
+	res := h.post(t, "/v1/messages", body, nil)
+	defer res.Body.Close()
+	var startHidden, endHidden int
+	sc := bufio.NewScanner(res.Body)
+	for sc.Scan() {
+		data, ok := strings.CutPrefix(sc.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		var ev struct {
+			Type    string
+			Message struct {
+				Usage wireUsage
+			}
+			Usage wireUsage
+		}
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			t.Fatal(err)
+		}
+		switch ev.Type {
+		case "message_start":
+			startHidden = ev.Message.Usage.HiddenTokens
+		case "message_delta":
+			endHidden = ev.Usage.HiddenTokens
+		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if endHidden != hidden || startHidden > endHidden {
+		t.Fatalf("stream hidden not settled: start=%d end=%d want=%d", startHidden, endHidden, hidden)
+	}
+	e := waitRequests(t, h, usage.Query{}, 1).Entries[0]
+	if e.HiddenTokens != hidden || e.Input != clientInput || e.CacheRead != 1500 {
+		t.Fatalf("stream ledger carve wrong: %+v", e)
 	}
 }
 
@@ -124,7 +264,7 @@ func TestPartialUsageEventsBilling(t *testing.T) {
 		{
 			name: "output update preserves input",
 			events: []string{
-				`{"uncachedInputTokens":5000,"cacheReadInputTokens":2000,"cacheWriteInputTokens":3000,"outputTokens":9}`,
+				`{"uncachedInputTokens":9052,"cacheReadInputTokens":2000,"cacheWriteInputTokens":3000,"outputTokens":9}`,
 				`{"outputTokens":11}`,
 				`{"totalTokens":10011,"normalizedTokenUsage":0.5}`,
 			},
@@ -134,14 +274,14 @@ func TestPartialUsageEventsBilling(t *testing.T) {
 			name: "input update preserves output",
 			events: []string{
 				`{"outputTokens":9}`,
-				`{"uncachedInputTokens":5000,"cacheReadInputTokens":2000,"cacheWriteInputTokens":3000}`,
+				`{"uncachedInputTokens":9052,"cacheReadInputTokens":2000,"cacheWriteInputTokens":3000}`,
 			},
 			want: usageBody{Input: 5000, CacheRead: 2000, CacheWrite: 3000, Output: 9},
 		},
 		{
 			name: "cache update recomputes uncached input",
 			events: []string{
-				`{"inputTokens":10000,"cacheReadInputTokens":2000,"cacheWriteInputTokens":3000,"outputTokens":9}`,
+				`{"inputTokens":14052,"cacheReadInputTokens":2000,"cacheWriteInputTokens":3000,"outputTokens":9}`,
 				`{"cacheReadInputTokens":4000}`,
 			},
 			want: usageBody{Input: 3000, CacheRead: 4000, CacheWrite: 3000, Output: 9},
@@ -149,7 +289,7 @@ func TestPartialUsageEventsBilling(t *testing.T) {
 		{
 			name: "explicit zero overrides previous values",
 			events: []string{
-				`{"uncachedInputTokens":5000,"cacheReadInputTokens":2000,"cacheWriteInputTokens":3000,"outputTokens":9}`,
+				`{"uncachedInputTokens":9052,"cacheReadInputTokens":2000,"cacheWriteInputTokens":3000,"outputTokens":9}`,
 				`{"uncachedInputTokens":0,"cacheReadInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0}`,
 			},
 		},
@@ -193,11 +333,13 @@ func TestPartialUsageEventsBilling(t *testing.T) {
 							if !ok || !strings.Contains(data, `"message_delta"`) {
 								continue
 							}
-							var event struct{ Usage usageBody }
+							var event struct {
+								Settled usageBody `json:"settled_usage"`
+							}
 							if err := json.Unmarshal([]byte(data), &event); err != nil {
 								t.Fatal(err)
 							}
-							got, sawUsage = event.Usage, true
+							got, sawUsage = event.Settled, true
 						}
 						if err := sc.Err(); err != nil || !sawUsage {
 							t.Fatalf("stream usage missing: %v", err)
@@ -207,7 +349,7 @@ func TestPartialUsageEventsBilling(t *testing.T) {
 						t.Fatalf("response usage = %+v, want %+v", got, want)
 					}
 					e := waitRequests(t, h, usage.Query{}, 1).Entries[0]
-					cost := h.s.pricer.Cost(e.Model, turn.Usage{Input: want.Input, CacheRead: want.CacheRead, CacheWrite: want.CacheWrite, Output: want.Output, Credits: want.Credits})
+					cost := h.s.pricer.Cost(e.Model, turn.Usage{Input: e.Input, CacheRead: e.CacheRead, CacheWrite: e.CacheWrite, Output: e.Output, Credits: e.Credits, KiroInput: e.HiddenTokens})
 					if e.Input != want.Input || e.CacheRead != want.CacheRead || e.CacheWrite != want.CacheWrite || e.Output != want.Output || math.Abs(e.CostUSD-cost) > 1e-12 {
 						t.Fatalf("journal usage differs from response: %+v, want cost %v", e, cost)
 					}
@@ -233,7 +375,7 @@ func TestFailedAttemptCacheBillingAcrossRequests(t *testing.T) {
 							b = frame("assistantResponseEvent", `{"content":"partial answer"}`)
 						}
 						if stage == "input before content" {
-							b = frame("metadataEvent", `{"tokenUsage":{"uncachedInputTokens":5000,"cacheWriteInputTokens":3000}}`)
+							b = frame("metadataEvent", `{"tokenUsage":{"uncachedInputTokens":9052,"cacheWriteInputTokens":3000}}`)
 							b = append(b, frame("metadataEvent", `{"tokenUsage":{"outputTokens":0}}`)...)
 						}
 						if stage != "before usage" {
@@ -260,7 +402,7 @@ func TestFailedAttemptCacheBillingAcrossRequests(t *testing.T) {
 						if ttl == "1h" {
 							wantLong = 3000
 						}
-						if e.Input != 5000 || e.CacheWrite != 3000 || e.CacheWrite1h != wantLong || e.Output != 0 {
+						if e.Input != 5000 || e.HiddenTokens != 4052 || e.HiddenChargedUSD != 0 || e.CacheWrite != 3000 || e.CacheWrite1h != wantLong || e.Output != 0 {
 							t.Fatalf("partial reported input lost before failover: %+v", e)
 						}
 					}

@@ -11,7 +11,7 @@ import (
 
 // 隐藏 token 漂移监控。
 //
-// Kiro 把自己的 system 与对话模板放进上下文（约 4052 token）。下游按普通输入计这份固定基线，
+// Kiro 把自己的 system 与对话模板放进上下文（默认 4052 token）。隐藏项独立展示，按配置计费，
 // 校准时只缩放客户端内容。Kiro 一改 prompt 这个数就变，输入拆分会偏移。
 //
 // 反推：小请求（本地 prompt+输出 ≤ hiddenProbeMax）时本地分词误差只有几个 token，
@@ -36,14 +36,15 @@ type hiddenStat struct {
 }
 
 type hiddenWatch struct {
-	mu      sync.Mutex
-	samples map[string][]int
-	at      map[string]time.Time
-	alerted map[string]bool
+	mu       sync.Mutex
+	samples  map[string][]int
+	at       map[string]time.Time
+	alerted  map[string]bool
+	expected map[string]int
 }
 
 func newHiddenWatch() *hiddenWatch {
-	return &hiddenWatch{samples: map[string][]int{}, at: map[string]time.Time{}, alerted: map[string]bool{}}
+	return &hiddenWatch{samples: map[string][]int{}, at: map[string]time.Time{}, alerted: map[string]bool{}, expected: map[string]int{}}
 }
 
 // observe 记一个反推值；返回该模型当前状态，以及是否刚进入 / 离开告警。
@@ -64,6 +65,9 @@ func (h *hiddenWatch) observe(model string, v int, now time.Time) (hiddenStat, b
 func (h *hiddenWatch) statLocked(model string) hiddenStat {
 	s := slices.Sorted(slices.Values(h.samples[model]))
 	st := hiddenStat{Model: model, Expected: kiro.HiddenTokens(model), Samples: len(s), At: h.at[model]}
+	if n, ok := h.expected[model]; ok {
+		st.Expected = n
+	}
 	if len(s) == 0 {
 		return st
 	}
@@ -94,16 +98,19 @@ func (h *hiddenWatch) stats() []hiddenStat {
 
 // watchHidden 在上游报了上下文占用的小请求上反推隐藏 token。u 含固定基线，尚未校准。
 func (s *Server) watchHidden(model string, u turn.Usage, k kiro.Usage) {
-	local := u.PromptTokens() + u.Output - kiro.HiddenTokens(model)
+	local := u.PromptTokens() + u.Output
 	if k.Reported || k.Input <= 0 || local <= 0 || local > hiddenProbeMax {
 		return
 	}
+	s.hidden.mu.Lock()
+	s.hidden.expected[model] = s.cfg.HiddenTokensOf(model)
+	s.hidden.mu.Unlock()
 	st, changed := s.hidden.observe(model, k.Input-local, time.Now())
 	if !changed {
 		return
 	}
 	if st.Alert {
-		s.log.Warn("Kiro hidden context drifted: token calibration is off; update kiro.HiddenTokens",
+		s.log.Warn("Kiro hidden context drifted: verify a probe before updating hidden_tokens",
 			"model", model, "expected", st.Expected, "median", st.Median, "drift", st.Drift, "samples", st.Samples)
 	} else {
 		s.log.Info("Kiro hidden context back within tolerance", "model", model, "median", st.Median)
@@ -134,5 +141,5 @@ func (s *Server) noteReported(c *call, account string, local turn.Usage, k kiro.
 	s.log.Info("tokenUsage sample: upstream vs local", "model", c.model, "mode", s.cfg.ReportedUsageMode(),
 		"up_input", k.Input, "up_cache_read", k.CacheRead, "up_cache_write", k.CacheWrite, "up_output", k.Output,
 		"local_input", local.Input, "local_cache_read", local.CacheRead, "local_cache_write", local.CacheWrite,
-		"hidden", kiro.HiddenTokens(c.model), "context", k.Input+k.CacheRead+k.CacheWrite)
+		"hidden", s.cfg.HiddenTokensOf(c.model), "context", k.Input+k.CacheRead+k.CacheWrite)
 }

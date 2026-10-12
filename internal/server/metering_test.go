@@ -144,10 +144,10 @@ func TestKiroInputBilledDownstream(t *testing.T) {
 						}
 						return in, read, write
 					}
-					hidden := kiro.HiddenTokens(model)
+					hidden := h.s.cfg.HiddenTokensOf(model)
 					coldIn, coldRead, coldWrite := read()
 					warmIn, warmRead, warmWrite := read()
-					if coldIn != hidden || coldRead != 0 || coldWrite == 0 || warmIn != hidden || warmRead != coldWrite || warmWrite != 0 {
+					if coldIn != 0 || coldRead != 0 || coldWrite == 0 || warmIn != 0 || warmRead != coldWrite || warmWrite != 0 {
 						t.Fatalf("hidden=%d cold=(%d,%d,%d) warm=(%d,%d,%d)", hidden, coldIn, coldRead, coldWrite, warmIn, warmRead, warmWrite)
 					}
 					if p == protoAnthropic {
@@ -164,10 +164,10 @@ func TestKiroInputBilledDownstream(t *testing.T) {
 					}
 					entries := waitRequests(t, h, usage.Query{}, 2).Entries
 					for _, e := range entries {
-						if e.Input != hidden || e.CostUSD != h.s.pricer.Cost(model, turn.Usage{Input: e.Input, CacheRead: e.CacheRead, CacheWrite: e.CacheWrite, Output: e.Output}) {
+						if e.Input != 0 || e.HiddenTokens != hidden || e.CostUSD != h.s.pricer.Cost(model, turn.Usage{Input: e.Input, KiroInput: e.HiddenTokens, CacheRead: e.CacheRead, CacheWrite: e.CacheWrite, Output: e.Output}) {
 							t.Fatalf("hidden input missing from billing: %+v", e)
 						}
-						wantCredits := meter.EstimateCredits(meter.CreditRateOf(model, nil), turn.Usage{Input: e.Input - hidden, CacheRead: e.CacheRead, CacheWrite: e.CacheWrite, Output: e.Output}, hidden)
+						wantCredits := meter.EstimateCredits(meter.CreditRateOf(model, nil), turn.Usage{Input: e.Input, CacheRead: e.CacheRead, CacheWrite: e.CacheWrite, Output: e.Output}, hidden)
 						if e.Credits != wantCredits {
 							t.Fatalf("hidden input counted twice in credits: got %v want %v", e.Credits, wantCredits)
 						}
@@ -188,7 +188,7 @@ func TestLocalCacheMeteringAcrossTurns(t *testing.T) {
 		t.Fatalf("turn 1 usage = %+v", u1)
 	}
 	u2 := decodeUsage(t, h.post(t, "/v1/messages", cached(convo("fix the bug", "hello world", "and tests"), ""), session))
-	if u2.CacheRead != u1.CacheWrite+u1.Input-kiro.HiddenTokens("claude-sonnet-4.5") {
+	if u2.CacheRead != u1.CacheWrite+u1.Input {
 		t.Fatalf("turn 2 should read turn 1's prefix: %+v after %+v", u2, u1)
 	}
 	if u2.CacheWrite == 0 {
@@ -240,7 +240,7 @@ func TestUsageCalibratedToUpstreamContext(t *testing.T) {
 		t.Fatalf("count_tokens = %+v %v", ct, err)
 	}
 	// 上游内容比本地估算少 15%（开放模型分词器的典型情况）
-	content := (ct.InputTokens - kiro.HiddenTokens("claude-sonnet-4.5")) * 85 / 100
+	content := ct.InputTokens * 85 / 100
 	upstream := content + kiro.HiddenTokens("claude-sonnet-4.5")
 	h.up.stream = func(string) []byte {
 		var b []byte
@@ -251,7 +251,7 @@ func TestUsageCalibratedToUpstreamContext(t *testing.T) {
 	}
 	session := map[string]string{"X-Claude-Code-Session-Id": "cal"}
 	u := decodeUsage(t, h.post(t, "/v1/messages", body, session))
-	if got := u.Input + u.CacheRead + u.CacheWrite + u.Output; got != upstream {
+	if got := u.Input + u.CacheRead + u.CacheWrite + u.Output; got != upstream-4052 {
 		t.Fatalf("downstream total %d, want upstream %d (%+v, local %d)", got, upstream, u, ct.InputTokens)
 	}
 	if u.CacheWrite == 0 || u.Output == 0 || u.Credits != 0.5 {
@@ -274,7 +274,7 @@ func TestUsageCalibratedToUpstreamContext(t *testing.T) {
 		}
 		last = ev.Usage
 	}
-	if got := last.Input + last.CacheRead + last.CacheWrite + last.Output; got != upstream || last.CacheRead == 0 {
+	if got := last.Input + last.CacheRead + last.CacheWrite + last.Output; got != upstream-4052 || last.CacheRead == 0 {
 		t.Fatalf("stream message_delta usage %+v total %d, want %d with cache read", last, got, upstream)
 	}
 }

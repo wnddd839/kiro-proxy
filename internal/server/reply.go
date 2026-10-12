@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"kiro-proxy/internal/anthropic"
 	"kiro-proxy/internal/kiro"
@@ -66,17 +67,35 @@ const toolCallTokens = 8
 // 上游中途失败时调 sink.Fail 并把失败返回；下游走了则不再写 sink。
 // pumpOpts 是上游报了 tokenUsage 时的口径。
 type pumpOpts struct {
-	mode string // kiro.Reported*
+	mode      string // kiro.Reported*
+	maxTokens int
+	stops     []string
+	abort     func()
 }
 
 // reportedUsage 合并上游已报的记账；未报的部分保留本地计量。
 // 首条内容前失败时传入零用量，不能假定本地整段输入已被上游处理。
 func reportedUsage(u turn.Usage, k kiro.Usage, po pumpOpts) turn.Usage {
 	if k.Reported && po.mode != kiro.ReportedIgnore {
-		// 上游不分 TTL：1h 按本地拆分的占比搬到上游的 cacheWrite 上。
-		u.CacheWrite1h = meter.Scale1h(u.CacheWrite1h, u.CacheWrite, k.CacheWrite)
-		u.Input, u.CacheRead, u.CacheWrite = k.Input, k.CacheRead, k.CacheWrite
-		u.KiroInput = 0
+		// 上游报的输入是整段上下文，仍含 Kiro 自带的隐藏基线（口径未测定，按配置基线保守切分）。
+		// 把隐藏 token 从客户端输入里切出来单独记账：先切未命中，再切写入，最后切读，
+		// 客户端各项都不为负，且 Input+CacheRead+CacheWrite+KiroInput 守恒。
+		in, read, write := k.Input, k.CacheRead, k.CacheWrite
+		hidden := min(max(u.KiroInput, 0), in+read+write)
+		rem := hidden
+		if cut := min(rem, in); cut > 0 {
+			in, rem = in-cut, rem-cut
+		}
+		if cut := min(rem, write); cut > 0 {
+			write, rem = write-cut, rem-cut
+		}
+		if cut := min(rem, read); cut > 0 {
+			read -= cut
+		}
+		// 上游不分 TTL：1h 按本地拆分的占比搬到切分后的 cacheWrite 上。
+		u.CacheWrite1h = meter.Scale1h(u.CacheWrite1h, u.CacheWrite, write)
+		u.Input, u.CacheRead, u.CacheWrite = in, read, write
+		u.KiroInput = hidden
 	}
 	if k.OutputReported && po.mode != kiro.ReportedIgnore {
 		u.Output = max(k.Output, u.Reasoning)
@@ -86,14 +105,27 @@ func reportedUsage(u turn.Usage, k kiro.Usage, po pumpOpts) turn.Usage {
 }
 
 func pump(ctx context.Context, dec *kiro.Decoder, first kiro.Event, sink turn.Sink, input turn.Usage, settle func(turn.Usage, kiro.Usage) turn.Usage, po pumpOpts) reply {
-	// 上游可能在流尾首次报告输入为 0，开头不能提前报本地基线；最终累计值以 End 为准。
-	sink.Begin(turn.Usage{})
+	ctx, cancel := context.WithCancel(ctx)
+	// The accepted calibration range begins at 0.5; this is an estimate, not an upstream guarantee.
+	initial := input
+	initial.Input /= 2
+	initial.CacheRead /= 2
+	initial.CacheWrite /= 2
+	initial.CacheWrite1h = min(initial.CacheWrite, initial.CacheWrite1h/2)
+	sink.Begin(initial)
 
 	// 上游在长 thinking 时可能很久不出字，定时 ping 防止客户端 / 代理断开
 	events := make(chan kiro.Event)
 	readerDone := make(chan struct{})
 	// 返回前等读协程退出：调用方随后会 drain/关闭同一个 body，不能并发读
-	defer func() { <-readerDone }()
+	stopReader := func() {
+		cancel()
+		if po.abort != nil {
+			po.abort()
+		}
+		<-readerDone
+	}
+	defer stopReader()
 	go func() {
 		defer close(readerDone)
 		defer close(events)
@@ -112,16 +144,27 @@ func pump(ctx context.Context, dec *kiro.Decoder, first kiro.Event, sink turn.Si
 
 	var out, think strings.Builder
 	tools := 0
+	pending := ""
+	limited := false
+	sequence := ""
 	// measure 是到目前为止的用量：k 是上游报的记账。
 	measure := func(k kiro.Usage) turn.Usage {
 		u := input
 		u.Reasoning = meter.Count(think.String())
 		u.Output = meter.Count(out.String()) + u.Reasoning + tools*toolCallTokens
-		return reportedUsage(u, k, po)
+		localOutput := u.Output
+		u = reportedUsage(u, k, po)
+		if limited {
+			u.Output = localOutput
+			u.Credits = 0
+			u.Limited = true
+			u.StopSequence = sequence
+		}
+		return u
 	}
 	// partial 在没正常结束时取已消耗的量。先等读协程退出：Decoder 不能并发访问。
 	partial := func(r reply) reply {
-		<-readerDone
+		stopReader()
 		r.usage = measure(dec.Partial())
 		return r
 	}
@@ -130,12 +173,76 @@ func pump(ctx context.Context, dec *kiro.Decoder, first kiro.Event, sink turn.Si
 		sink.Fail(r.failure.Status, r.failure.Message)
 		return partial(r)
 	}
+	finish := func(stop string, k kiro.Usage) reply {
+		stopReader()
+		u := settle(measure(k), k)
+		sink.End(stop, u)
+		return reply{usage: u, kiro: k, ok: true}
+	}
+	deliver := func(text string, thinking bool, send func(string)) bool {
+		count := func(s string) int {
+			if thinking {
+				return meter.Count(out.String()) + meter.Count(think.String()+s) + tools*toolCallTokens
+			}
+			return meter.Count(out.String()+s) + meter.Count(think.String()) + tools*toolCallTokens
+		}
+		truncated := false
+		if po.maxTokens > 0 && count(text) > po.maxTokens {
+			end := 0
+			for end < len(text) {
+				_, n := utf8.DecodeRuneInString(text[end:])
+				if count(text[:end+n]) > po.maxTokens {
+					break
+				}
+				end += n
+			}
+			text = text[:end]
+			truncated = true
+		}
+		if text != "" {
+			if thinking {
+				think.WriteString(text)
+			} else {
+				out.WriteString(text)
+			}
+			send(text)
+		}
+		return truncated || (po.maxTokens > 0 && count("") >= po.maxTokens)
+	}
+	flushText := func(final bool) (string, bool) {
+		at := -1
+		for _, stop := range po.stops {
+			if n := strings.Index(pending, stop); n >= 0 && (at < 0 || n < at) {
+				at = n
+				sequence = stop
+			}
+		}
+		if at >= 0 {
+			prefix := pending[:at]
+			pending = ""
+			return prefix, true
+		}
+		keep := 0
+		if !final {
+			for _, stop := range po.stops {
+				for n := 1; n < len(stop) && n <= len(pending); n++ {
+					if strings.HasSuffix(pending, stop[:n]) {
+						keep = max(keep, n)
+					}
+				}
+			}
+		}
+		text := pending[:len(pending)-keep]
+		pending = pending[len(pending)-keep:]
+		return text, false
+	}
+
 	for {
 		var ev kiro.Event
 		var more bool
 		select {
 		case <-ctx.Done():
-			return partial(reply{})
+			return fail("upstream timeout or client interruption")
 		case <-ping.C:
 			sink.Ping()
 			continue
@@ -143,32 +250,71 @@ func pump(ctx context.Context, dec *kiro.Decoder, first kiro.Event, sink turn.Si
 		}
 		if !more {
 			if ctx.Err() != nil {
-				return partial(reply{})
+				return fail("upstream timeout or client interruption")
 			}
 			return fail(brokeOff)
 		}
+		// A different block ends the text run. Flush a possible stop prefix
+		// before opening thinking/tools, rather than reordering it after them.
+		if ev.Kind == kiro.EvThink || ev.Kind == kiro.EvToolStart {
+			text, stopped := flushText(true)
+			if deliver(text, false, sink.Text) {
+				limited = true
+				return finish(turn.StopMaxTokens, kiro.Usage{})
+			}
+			if stopped {
+				limited = true
+				return finish(turn.StopSequence, kiro.Usage{})
+			}
+		}
 		switch ev.Kind {
 		case kiro.EvText:
-			out.WriteString(ev.Text)
-			sink.Text(ev.Text)
+			pending += ev.Text
+			text, stopped := flushText(false)
+			if deliver(text, false, sink.Text) {
+				limited = true
+				return finish(turn.StopMaxTokens, kiro.Usage{})
+			}
+			if stopped {
+				limited = true
+				return finish(turn.StopSequence, kiro.Usage{})
+			}
 		case kiro.EvThink:
-			think.WriteString(ev.Text)
-			sink.Thinking(ev.Text)
+			if deliver(ev.Text, true, sink.Thinking) {
+				limited = true
+				return finish(turn.StopMaxTokens, kiro.Usage{})
+			}
 		case kiro.EvSig:
 			sink.Signature(ev.Text)
 		case kiro.EvToolStart:
+			if po.maxTokens > 0 && meter.Count(out.String()+ev.Name)+meter.Count(think.String())+(tools+1)*toolCallTokens > po.maxTokens {
+				limited = true
+				return finish(turn.StopMaxTokens, kiro.Usage{})
+			}
 			tools++
 			out.WriteString(ev.Name)
 			sink.ToolStart(ev.ID, ev.Name)
 		case kiro.EvToolArgs:
-			out.WriteString(ev.Text)
-			sink.ToolArgs(ev.Text)
+			if deliver(ev.Text, false, sink.ToolArgs) {
+				limited = true
+				return finish(turn.StopMaxTokens, kiro.Usage{})
+			}
 		case kiro.EvError:
 			return fail(ev.Text)
 		case kiro.EvStop:
-			u := settle(measure(ev.Usage), ev.Usage)
-			sink.End(ev.Stop, u)
-			return reply{usage: u, kiro: ev.Usage, ok: true}
+			text, stopped := flushText(true)
+			if deliver(text, false, sink.Text) {
+				limited = true
+				return finish(turn.StopMaxTokens, kiro.Usage{})
+			}
+			if stopped {
+				limited = true
+				return finish(turn.StopSequence, kiro.Usage{})
+			}
+			if po.mode != kiro.ReportedIgnore && po.maxTokens > 0 && ev.Usage.Output > po.maxTokens {
+				limited = true
+			}
+			return finish(ev.Stop, ev.Usage)
 		}
 	}
 }
@@ -180,6 +326,7 @@ type anthropicStream struct {
 	id, model string
 	index     int
 	open      string
+	initial   turn.Usage
 }
 
 func newAnthropicStream(w http.ResponseWriter, id, model string) turn.Sink {
@@ -212,6 +359,7 @@ func (a *anthropicStream) delta(d map[string]any) {
 }
 
 func (a *anthropicStream) Begin(u turn.Usage) {
+	a.initial = u
 	h := a.w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -257,10 +405,16 @@ func (a *anthropicStream) Ping() { a.send("ping", map[string]any{}) }
 
 func (a *anthropicStream) End(stop string, u turn.Usage) {
 	a.closeBlock()
-	// message_delta 的 usage 是最终累计值：包含 Kiro 输入，开头为 0，不应与开头重复相加。
+	actual := anthropicUsage(u)
+	u.Input = max(u.Input, a.initial.Input)
+	u.CacheRead = max(u.CacheRead, a.initial.CacheRead)
+	u.CacheWrite = max(u.CacheWrite, a.initial.CacheWrite)
+	u.CacheWrite1h = min(u.CacheWrite, max(u.CacheWrite1h, a.initial.CacheWrite1h))
+	u.KiroInput = max(u.KiroInput, a.initial.KiroInput)
 	a.send("message_delta", map[string]any{
-		"delta": map[string]any{"stop_reason": stop, "stop_sequence": nil},
-		"usage": anthropicUsage(u),
+		"delta":         map[string]any{"stop_reason": stop, "stop_sequence": stopSequence(u)},
+		"usage":         anthropicUsage(u),
+		"settled_usage": actual,
 	})
 	a.send("message_stop", map[string]any{})
 }
@@ -285,7 +439,7 @@ func anthropicMessage(t *turn.Turn) anthropic.Response {
 	}
 	return anthropic.Response{
 		ID: t.ID, Type: "message", Role: "assistant", Model: t.Model, Content: blocks,
-		StopReason: t.Stop, Usage: anthropicUsage(t.Usage),
+		StopReason: t.Stop, StopSequence: stopSequence(t.Usage), Usage: anthropicUsage(t.Usage),
 	}
 }
 
@@ -298,5 +452,14 @@ func anthropicUsage(u turn.Usage) anthropic.Usage {
 		CacheCreationInputTokens: u.CacheWrite,
 		CacheCreation:            &anthropic.CacheCreation{Ephemeral5m: w5, Ephemeral1h: u.CacheWrite - w5},
 		Credits:                  u.Credits,
+		HiddenTokens:             u.KiroInput,
+		HiddenChargedUSD:         u.HiddenChargedUSD,
 	}
+}
+
+func stopSequence(u turn.Usage) *string {
+	if u.StopSequence == "" {
+		return nil
+	}
+	return &u.StopSequence
 }

@@ -42,6 +42,8 @@ type chatRequest struct {
 	ToolChoice          json.RawMessage `json:"tool_choice"`
 	MaxTokens           int             `json:"max_tokens"`
 	MaxCompletionTokens int             `json:"max_completion_tokens"`
+	Stop                json.RawMessage `json:"stop"`
+	Temperature         *float64        `json:"temperature"`
 	ReasoningEffort     string          `json:"reasoning_effort"`
 	Reasoning           *reasoningOpt   `json:"reasoning"`
 	PromptCacheKey      string          `json:"prompt_cache_key"`
@@ -99,6 +101,15 @@ func FromChat(raw []byte, hosted string) (anthropic.Request, ChatOptions, error)
 		Stream:         in.Stream,
 		MaxTokens:      cmp.Or(in.MaxCompletionTokens, in.MaxTokens),
 		PromptCacheKey: in.PromptCacheKey,
+		Temperature:    in.Temperature,
+	}
+	if len(in.Stop) > 0 && string(in.Stop) != "null" {
+		var single string
+		if json.Unmarshal(in.Stop, &single) == nil {
+			req.StopSequences = []string{single}
+		} else if err := json.Unmarshal(in.Stop, &req.StopSequences); err != nil {
+			return req, ChatOptions{}, errors.New("stop must be a string or string array")
+		}
 	}
 	opts := ChatOptions{IncludeUsage: true, User: in.User}
 	if in.StreamOptions != nil && in.StreamOptions.IncludeUsage != nil {
@@ -179,6 +190,7 @@ type responsesRequest struct {
 	Tools              []respToolDef   `json:"tools"`
 	ToolChoice         json.RawMessage `json:"tool_choice"`
 	MaxOutputTokens    int             `json:"max_output_tokens"`
+	Temperature        *float64        `json:"temperature"`
 	Reasoning          *reasoningOpt   `json:"reasoning"`
 	Stream             bool            `json:"stream"`
 	PromptCacheKey     string          `json:"prompt_cache_key"`
@@ -215,6 +227,7 @@ func FromResponses(raw []byte, hosted string) (anthropic.Request, ResponsesOptio
 		Model:          in.Model,
 		Stream:         in.Stream,
 		MaxTokens:      in.MaxOutputTokens,
+		Temperature:    in.Temperature,
 		PromptCacheKey: in.PromptCacheKey,
 	}
 	if in.Instructions != "" {

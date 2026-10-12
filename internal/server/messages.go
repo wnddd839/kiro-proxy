@@ -60,21 +60,22 @@ const thinkingTagTokens = 24
 
 // call 是一次下游请求在分发层里的状态。
 type call struct {
-	proto    proto
-	req      anthropic.Request
-	chat     openai.ChatOptions
-	resp     openai.ResponsesOptions
-	model    string // Kiro 模型 id
-	thread   string // 会话线程键：粘号、钉 conversationId、钉 thinking
-	budget   int
-	lineage  []uint64
-	prompt   *meter.Prompt
-	schema   *kiro.ModelRequestSchema
-	traceKey string    // 客户端会话标识，调试时跨 system 变化比较
-	key      *keys.Key // nil 是匿名（未配 key 或命中 config.api_keys）
-	start    time.Time
-	entry    usage.Entry // 最终一次尝试的记账（含请求状态）
-	recorded bool        // 成功时在写出结尾前已记账
+	proto        proto
+	req          anthropic.Request
+	chat         openai.ChatOptions
+	resp         openai.ResponsesOptions
+	model        string // Kiro 模型 id
+	thread       string // 会话线程键：粘号、钉 conversationId、钉 thinking
+	budget       int
+	lineage      []uint64
+	prompt       *meter.Prompt
+	schema       *kiro.ModelRequestSchema
+	traceKey     string    // 客户端会话标识，调试时跨 system 变化比较
+	key          *keys.Key // nil 是匿名（未配 key 或命中 config.api_keys）
+	start        time.Time
+	entry        usage.Entry // 最终一次尝试的记账（含请求状态）
+	recorded     bool        // 成功时在写出结尾前已记账
+	threadReason string
 	// spent 是最终尝试未完成时已消耗的量（中断 / 中途报错）：上游已经扣了 credits，账本要记上。
 	// 换号重试了的尝试不在这里，它们已各自记了一行（Retried）。
 	spent   turn.Usage
@@ -130,6 +131,20 @@ func (s *Server) prepare(r *http.Request, p proto, k *keys.Key) (*call, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.req.MaxTokens < 0 {
+		return nil, errors.New("max_tokens must not be negative")
+	}
+	if c.req.MaxTokens == 0 {
+		c.req.MaxTokens = reserveOutput
+	}
+	for _, stop := range c.req.StopSequences {
+		if stop == "" {
+			return nil, errors.New("stop_sequences must not contain empty strings")
+		}
+	}
+	if c.req.Temperature != nil {
+		s.log.Warn("temperature 已忽略: upstream does not support forwarding", "proto", p)
+	}
 	normalize.Request(&c.req, s.norm)
 	for i := range c.req.Tools {
 		t := &c.req.Tools[i]
@@ -137,12 +152,23 @@ func (s *Server) prepare(r *http.Request, p proto, k *keys.Key) (*call, error) {
 	}
 	s.loadCatalog(r.Context())
 	c.model = kiroModel(c.req.Model, s.cfg.ModelAliases, s.models.known)
+	price, known := s.pricer.PriceOf(c.model)
+	if price.Warning != "" {
+		s.log.Warn("model price warning", "model", c.model, "warning", price.Warning)
+	}
+	if !known && s.cfg.UnknownModelPricing == "reject" {
+		return nil, errors.New("unknown model price: request rejected")
+	}
 	c.schema = s.models.model(c.model).RequestSchema
+	c.thread, c.threadReason = s.stableThread(r, &c.req, k)
+	if c.schema != nil && c.thread != "" {
+		pin := s.native.getOrSet(c.thread+"|"+c.model, nativePin{Thinking: c.req.Thinking, Output: c.req.OutputConfig})
+		c.req.Thinking, c.req.OutputConfig = pin.Thinking, pin.Output
+	}
 	fields, err := kiro.ThinkingFields(&c.req, c.schema)
 	if err != nil {
 		return nil, err
 	}
-	c.thread = threadKey(r, &c.req, k)
 	c.traceKey = sessionpin.Key(r.Header, cmp.Or(c.req.PromptCacheKey, r.Header.Get("X-Claude-Code-Session-Id"), normalize.MetadataSession(&c.req)), nil)
 	if c.traceKey == "" {
 		c.traceKey = c.thread
@@ -219,31 +245,40 @@ func (s *Server) admit(w http.ResponseWriter, c *call) (int, error) {
 	spent.Credits += r.Credits
 	spent.CostUSD += r.CostUSD
 	err := k.Check(now, spent, time.Local)
+	reserve := s.estimate(c, t)
+	if err == nil {
+		candidate := keys.Spent{Requests: spent.Requests + reserve.Requests, Credits: spent.Credits + reserve.Credits, CostUSD: spent.CostUSD + reserve.CostUSD}
+		// Check uses >= for already-spent amounts; a reservation exactly at the limit is allowed.
+		if (k.LimitUSD > 0 && candidate.CostUSD > k.LimitUSD) || (k.LimitCredits > 0 && candidate.Credits > k.LimitCredits) || (k.LimitRequests > 0 && candidate.Requests > k.LimitRequests) {
+			err = k.Check(now, candidate, time.Local)
+		}
+	}
 	if err == nil {
 		err = s.keys.Allow(k)
 	}
 	if err != nil {
 		return admitStatus(w, err), err
 	}
-	c.hold = s.holds.addLocked(k.ID, s.estimate(c, t))
+	c.hold = s.holds.addLocked(k.ID, reserve)
 	return 0, nil
 }
 
 // reserveOutput 是预留时对输出 token 的估计上限。
 const reserveOutput = 4096
 
-// estimate 是一次请求在准入时预留的量：1 次请求；费用按整段输入未命中缓存、输出取 max_tokens
-// （不超过 reserveOutput）估，并且不低于本周期的单次均值；credits 按本周期单次均值估。
+// estimate reserves all max_tokens and the highest cache/context rate for twice
+// the local prompt estimate, bounded below by historical average spending.
 func (s *Server) estimate(c *call, period usage.Totals) keys.Spent {
 	out := reserveOutput
 	if c.req.MaxTokens > 0 {
-		out = min(out, c.req.MaxTokens)
+		out = c.req.MaxTokens
 	}
-	u := turn.Usage{Input: c.prompt.Tokens + kiro.HiddenTokens(c.model), Output: out}
+	u := turn.Usage{Input: c.prompt.Tokens * 2, KiroInput: s.cfg.HiddenTokensOf(c.model), Output: out}
+	u.Credits = meter.EstimateCredits(meter.CreditRateOf(c.model, s.cfg.CreditRates), u, u.KiroInput)
 	if period.Requests > 0 {
-		u.Credits = period.Credits / float64(period.Requests)
+		u.Credits = max(u.Credits, period.BillableCredits()/float64(period.Requests))
 	}
-	cost := s.pricer.Cost(c.model, u)
+	cost := max(s.pricer.ReserveCost(c.model, u.Input, u.KiroInput, out), s.pricer.Cost(c.model, u))
 	if period.Requests > 0 {
 		cost = max(cost, period.CostUSD/float64(period.Requests))
 	}
@@ -299,6 +334,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, c *call) {
 	ctx := r.Context()
 	c.entry = usage.Entry{Time: c.start, Model: c.model, Protocol: string(c.proto), Stream: c.req.Stream, Thread: shortKey(c.thread),
 		Request: c.proto.newID()}
+	c.entry.ThreadReason = c.threadReason
 	if c.key != nil {
 		c.entry.Key, c.entry.KeyName = c.key.ID, c.key.Name
 	}
@@ -363,6 +399,9 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, c *call) {
 
 // attempt 在一个号上试一次。在向下游写出任何字节之前失败都可以换号重试。
 func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool.Lease, c *call) outcome {
+	parent := ctx
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	id := lease.ID
 	rec := requestRecord{Time: time.Now(), Protocol: string(c.proto), Key: c.entry.KeyName, Account: id, Model: c.model,
 		Stream: c.req.Stream, Thinking: c.budget, Pinned: lease.Pinned, Thread: shortKey(c.thread)}
@@ -410,7 +449,17 @@ func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool
 		if err := s.traceRequest(c, id, payload); err != nil {
 			s.log.Warn("upstream request trace failed", "err", err)
 		}
-		return s.pool.Client().Generate(ctx, cred, payload)
+		timer := time.AfterFunc(durationOr(time.Duration(s.cfg.UpstreamFirstByteTimeout), 60*time.Second), cancel)
+		res, err := s.pool.Client().Generate(ctx, cred, payload)
+		if err == nil {
+			idle := durationOr(time.Duration(s.cfg.UpstreamIdleTimeout), 120*time.Second)
+			// Keep the first-byte deadline through headers; the first body read
+			// transitions this same watchdog to the streaming idle deadline.
+			res.Body = &timeoutBody{ReadCloser: res.Body, timer: timer, idle: idle, cancel: cancel}
+		} else {
+			timer.Stop()
+		}
+		return res, err
 	}
 	res, err := generate()
 	refreshErr := false
@@ -447,7 +496,7 @@ func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool
 		}
 	}
 	if err != nil {
-		if ctx.Err() != nil {
+		if parent.Err() != nil {
 			gone()
 			return outcome{done: true}
 		}
@@ -473,15 +522,29 @@ func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool
 	dec := kiro.NewDecoder(res.Body, c.budget > 0, s.models.window(c.model), names)
 	dec.Mode = s.cfg.ReportedUsageMode()
 	first, err := dec.Next()
+	if err != nil {
+		if parent.Err() != nil {
+			gone()
+			return outcome{done: true}
+		}
+		f := kiro.Failure{Status: http.StatusBadGateway, Message: "upstream first event timed out or stream closed", Class: kiro.ClassTransient, Network: true}
+		note(f)
+		s.pool.Fail(id, f)
+		return outcome{failure: &f}
+	}
 
 	// 输入侧按本地 prompt cache 模拟拆分；缓存跟号走，与上游一致
 	split := s.cache.Peek(id, c.prompt)
-	input := turn.Usage{Input: split.Input + kiro.HiddenTokens(c.model), KiroInput: kiro.HiddenTokens(c.model), CacheRead: split.CacheRead, CacheWrite: split.CacheWrite, CacheWrite1h: split.CacheWrite1h}
-	po := pumpOpts{mode: s.cfg.ReportedUsageMode()}
+	input := turn.Usage{Input: split.Input, KiroInput: s.cfg.HiddenTokensOf(c.model), CacheRead: split.CacheRead, CacheWrite: split.CacheWrite, CacheWrite1h: split.CacheWrite1h}
+	po := pumpOpts{mode: s.cfg.ReportedUsageMode(), maxTokens: c.req.MaxTokens, stops: c.req.StopSequences, abort: func() { cancel(); res.Body.Close() }}
 	if err == nil && first.Kind == kiro.EvError {
 		// 首条内容前也可能已报 credits / tokenUsage，只按已报用量记成本。
 		k := dec.Partial()
-		u := reportedUsage(turn.Usage{}, k, po)
+		seed := turn.Usage{}
+		if k.Reported && po.mode != kiro.ReportedIgnore {
+			seed.KiroInput = s.cfg.HiddenTokensOf(c.model)
+		}
+		u := reportedUsage(seed, k, po)
 		u.CacheWrite1h = meter.Scale1h(input.CacheWrite1h, input.CacheWrite, u.CacheWrite)
 		s.noteReported(c, id, input, k)
 		s.charge(id, c, u)
@@ -508,21 +571,23 @@ func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool
 			if po.mode == kiro.ReportedIgnore {
 				upstream = int(math.Round(k.ContextPct / 100 * float64(s.models.window(c.model))))
 			}
-			if upstream > 0 {
-				// 只校准客户端内容的比例，再将 Kiro 自带输入按普通输入计费；1h 占比不变。
-				u = meter.Calibrate(u, upstream, kiro.HiddenTokens(c.model), k.OutputReported && po.mode != kiro.ReportedIgnore)
+			if upstream > 0 && !u.Limited {
+				// Only calibrate client input; hidden billing stays independent.
+				u = meter.Calibrate(u, upstream, s.cfg.HiddenTokensOf(c.model))
 			}
 		}
-		u.CostUSD = s.pricer.Cost(c.model, u)
+		u = s.priced(c.model, u)
 		// 先记账再写结尾：下一个请求的预算判断要看到这一笔
 		c.entry.Status, c.entry.Error = http.StatusOK, ""
 		s.fillUsage(&c.entry, u)
 		c.entry.Context = k.Input
 		c.entry.MS = time.Since(c.start).Milliseconds()
 		c.entry.FirstMS = ts.firstMS()
+		s.holds.mu.Lock()
 		s.usage.Record(c.entry)
+		s.holds.releaseLocked(c.hold)
+		s.holds.mu.Unlock()
 		c.recorded = true
-		s.holds.release(c.hold) // 已入账：预留立刻释放，下一个请求不重复计
 		return u
 	}
 	respID := c.proto.newID()
@@ -544,7 +609,7 @@ func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool
 			s.charge(id, c, out.usage)
 		}
 		switch {
-		case out.failure != nil && ctx.Err() == nil:
+		case out.failure != nil && parent.Err() == nil:
 			f := *out.failure
 			if s.pool.Fail(id, f) {
 				note(f)
@@ -566,6 +631,11 @@ func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool
 	}
 
 	if c.req.Stream && !out.ok {
+		if parent.Err() != nil {
+			// Delivered usage is settled, but client cancellation is not an
+			// upstream/account failure and must not cool the account.
+			out.failure = nil
+		}
 		s.charge(id, c, out.usage)
 		c.spent, c.aborted = out.usage, true
 	}
@@ -620,9 +690,7 @@ func (s *Server) estimateCredits(model string, u turn.Usage) (turn.Usage, bool) 
 	if u.Credits != 0 || (u.PromptTokens() == 0 && u.Output == 0) {
 		return u, false
 	}
-	content := u
-	content.Input -= u.KiroInput
-	u.Credits = meter.EstimateCredits(meter.CreditRateOf(model, s.cfg.CreditRates), content, u.KiroInput)
+	u.Credits = meter.EstimateCredits(meter.CreditRateOf(model, s.cfg.CreditRates), u, u.KiroInput)
 	return u, u.Credits > 0
 }
 
@@ -638,6 +706,7 @@ func (s *Server) retried(c *call, id string, f kiro.Failure, u turn.Usage, took 
 	e.FirstMS, e.Context = 0, 0
 	s.fillUsage(&e, u)
 	e.CostUSD = 0
+	e.HiddenChargedUSD = 0
 	e.MS = took.Milliseconds()
 	s.usage.Record(e)
 }
@@ -645,6 +714,10 @@ func (s *Server) retried(c *call, id string, f kiro.Failure, u turn.Usage, took 
 // priced 补上费用；上游没来得及报 credits（中断时常见）时按 token 估一个。
 func (s *Server) priced(model string, u turn.Usage) turn.Usage {
 	u.CostUSD = s.pricer.Cost(model, u)
+	u.HiddenChargedUSD = s.pricer.HiddenCost(model, u)
+	if s.pricer.Basis == meter.BasisCredits && u.Credits > 0 {
+		u.HiddenChargedUSD = 0
+	}
 	return u
 }
 
@@ -656,6 +729,7 @@ func (s *Server) fillUsage(e *usage.Entry, u turn.Usage) {
 	e.Input, e.CacheRead, e.CacheWrite, e.CacheWrite1h = u.Input, u.CacheRead, u.CacheWrite, u.CacheWrite1h
 	e.Output, e.Reasoning = u.Output, u.Reasoning
 	e.Credits, e.CostUSD = u.Credits, u.CostUSD
+	e.HiddenTokens, e.HiddenChargedUSD = u.KiroInput, u.HiddenChargedUSD
 	e.UpstreamUSD = s.pricer.CreditsUSD(u.Credits)
 }
 
@@ -722,7 +796,7 @@ func (s *Server) countTokens(w http.ResponseWriter, r *http.Request, _ *keys.Key
 		t.Description = kiro.ToolDescription(t.Description, t.Name)
 	}
 	model := kiroModel(req.Model, s.cfg.ModelAliases, s.models.known)
-	writeJSON(w, http.StatusOK, map[string]int{"input_tokens": meter.Analyze(&req, "", 0, meter.ModeOff).Tokens + kiro.HiddenTokens(model)})
+	writeJSON(w, http.StatusOK, map[string]int{"input_tokens": meter.Analyze(&req, "", 0, meter.ModeOff).Tokens, "hidden_tokens": s.cfg.HiddenTokensOf(model)})
 }
 
 // listModels 同时是 Anthropic 与 OpenAI 的模型列表形状。key 限定了模型时只列允许的。

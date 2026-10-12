@@ -165,9 +165,9 @@ type Error struct {
 
 func (e *Error) Error() string {
 	if e.Status > 0 {
-		return fmt.Sprintf("kiro: %s (%d)", e.Message, e.Status)
+		return fmt.Sprintf("kiro: %s (%d)", Diagnostic(e.Message), e.Status)
 	}
-	return "kiro: " + e.Message
+	return "kiro: " + Diagnostic(e.Message)
 }
 
 // IsGone 报告 err 是否意味着凭证永久失效、账号需要重新登录。
@@ -734,5 +734,5 @@ func errorMessage(status int, body []byte) string {
 			}
 		}
 	}
-	return cmp.Or(msg, http.StatusText(status))
+	return Diagnostic(cmp.Or(msg, http.StatusText(status)))
 }

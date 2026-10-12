@@ -81,6 +81,8 @@ func finishReason(stop string) string {
 
 // Usage 是 Chat Completions 的 usage，外加非标准的缓存 / credits 字段。
 type Usage struct {
+	HiddenTokens            int               `json:"hidden_tokens,omitzero"`
+	HiddenChargedUSD        float64           `json:"hidden_tokens_charged_usd,omitzero"`
 	PromptTokens            int               `json:"prompt_tokens"`
 	CompletionTokens        int               `json:"completion_tokens"`
 	TotalTokens             int               `json:"total_tokens"`
@@ -106,6 +108,7 @@ type CompletionDetails struct {
 func ChatUsage(u turn.Usage) Usage {
 	p := u.PromptTokens()
 	return Usage{
+		HiddenTokens: u.KiroInput, HiddenChargedUSD: u.HiddenChargedUSD,
 		PromptTokens:             p,
 		CompletionTokens:         u.Output,
 		TotalTokens:              p + u.Output,
@@ -119,6 +122,8 @@ func ChatUsage(u turn.Usage) Usage {
 
 // RespUsage 是 Responses API 的 usage，外加非标准的缓存 / credits 字段。
 type RespUsage struct {
+	HiddenTokens        int               `json:"hidden_tokens,omitzero"`
+	HiddenChargedUSD    float64           `json:"hidden_tokens_charged_usd,omitzero"`
 	InputTokens         int               `json:"input_tokens"`
 	InputTokensDetails  PromptDetails     `json:"input_tokens_details"`
 	OutputTokens        int               `json:"output_tokens"`
@@ -134,6 +139,7 @@ type RespUsage struct {
 func ResponsesUsage(u turn.Usage) RespUsage {
 	p := u.PromptTokens()
 	return RespUsage{
+		HiddenTokens: u.KiroInput, HiddenChargedUSD: u.HiddenChargedUSD,
 		InputTokens:              p,
 		InputTokensDetails:       PromptDetails{CachedTokens: u.CacheRead},
 		OutputTokens:             u.Output,

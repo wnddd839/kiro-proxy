@@ -21,11 +21,13 @@ import (
 
 // sessionState 是会话快照。
 type sessionState struct {
-	Version int                                           `json:"version"`
-	Pins    map[string]sessionpin.PinSnapshot             `json:"pins"`
-	Conv    map[string]map[string]sessionpin.ConvSnapshot `json:"conversations"`
-	Lines   map[string]snapshotTTL[[]uint64]              `json:"lineage"`
-	Think   map[string]snapshotTTL[int]                   `json:"thinking"`
+	Version  int                                           `json:"version"`
+	Pins     map[string]sessionpin.PinSnapshot             `json:"pins"`
+	Conv     map[string]map[string]sessionpin.ConvSnapshot `json:"conversations"`
+	Lines    map[string]snapshotTTL[[]uint64]              `json:"lineage"`
+	Think    map[string]snapshotTTL[int]                   `json:"thinking"`
+	Native   map[string]snapshotTTL[nativePin]             `json:"native"`
+	Prefixes map[string]snapshotTTL[systemPrefix]          `json:"system_prefixes"`
 }
 
 const sessionStateVersion = 1
@@ -44,6 +46,7 @@ func (s *Server) saveState() error {
 		Conv:    s.conv.Dump(),
 		Lines:   s.lines.dump(),
 		Think:   s.think.dump(),
+		Native:  s.native.dump(), Prefixes: s.threadPrefixes.dump(),
 	}
 	raw, err := json.Marshal(st)
 	if err != nil {
@@ -86,5 +89,7 @@ func (s *Server) loadState() (cache, sessions int, err error) {
 	sessions = s.pool.Pins().Restore(st.Pins) + s.conv.Restore(st.Conv)
 	s.lines.restore(st.Lines)
 	s.think.restore(st.Think)
+	s.native.restore(st.Native)
+	s.threadPrefixes.restore(st.Prefixes)
 	return n, sessions, nil
 }

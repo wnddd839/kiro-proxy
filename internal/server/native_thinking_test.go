@@ -52,7 +52,7 @@ func TestNativeThinkingAcrossProtocols(t *testing.T) {
 							t.Fatalf("status %d", res.StatusCode)
 						}
 						e := waitRequests(t, h, usage.Query{}, int64(i+1)).Entries[0]
-						cold := i < 2 || effort == "none"
+						cold := i == 0
 						if cold && (e.CacheRead != 0 || e.CacheWrite == 0) {
 							t.Fatalf("new effort should have a cold local prefix: %+v", e)
 						}
@@ -67,7 +67,7 @@ func TestNativeThinkingAcrossProtocols(t *testing.T) {
 							t.Fatalf("native fields missing: %+v", call)
 						}
 						config, ok := fields[model.path].(map[string]any)
-						if !ok || config["effort"] != effort {
+						if !ok || config["effort"] != efforts[0] {
 							t.Fatalf("effort was lost or pinned: %+v", fields)
 						}
 						encoded, _ := json.Marshal(call["conversationState"])

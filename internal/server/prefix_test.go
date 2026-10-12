@@ -52,6 +52,10 @@ func TestUpstreamPrefixTraceAcrossTurns(t *testing.T) {
 		h.up.mu.Lock()
 		actual := bytes.Clone(h.up.calls[n-1].raw)
 		h.up.mu.Unlock()
+		actual, err = kiro.RedactPayload(actual)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if !bytes.Equal(captured, actual) {
 			t.Fatal("trace differs from bytes actually received upstream")
 		}
@@ -93,7 +97,7 @@ func TestUpstreamPrefixTraceAcrossTurns(t *testing.T) {
 		t.Fatalf("tool change not diagnosed: %+v", p)
 	}
 	changedEffort := post(reordered, strings.Replace(toolsReverse, "Read file", "Read a different file", 1), strings.Replace(system, "2026-10-09", "2026-10-10", 1), "high")
-	if p := changedEffort.Prefix; p.SameParameters || !p.MessagesExtend {
+	if p := changedEffort.Prefix; !p.SameParameters || !p.MessagesExtend {
 		t.Fatalf("effort change not diagnosed: %+v", p)
 	}
 }

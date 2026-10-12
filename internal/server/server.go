@@ -35,10 +35,12 @@ type Server struct {
 	log  *slog.Logger
 	norm normalize.Options
 
-	conv   *sessionpin.ConversationTable // 线程+号 → 上游 conversationId
-	lines  *ttlMap[[]uint64]             // 线程 → 上次请求的消息指纹
-	think  *ttlMap[int]                  // 线程 → 钉住的 thinking 预算
-	models catalog
+	conv           *sessionpin.ConversationTable // 线程+号 → 上游 conversationId
+	lines          *ttlMap[[]uint64]             // 线程 → 上次请求的消息指纹
+	think          *ttlMap[int]                  // 线程 → 钉住的 thinking 预算
+	native         *ttlMap[nativePin]
+	threadPrefixes *ttlMap[systemPrefix]
+	models         catalog
 
 	keys         *keys.Store
 	usage        *usage.Journal
@@ -76,6 +78,7 @@ type Stores struct {
 
 // New 建服务。bg 结束时后台任务停止。st 的生命周期归调用方。
 func New(bg context.Context, cfg config.Config, p *pool.Pool, log *slog.Logger, st Stores) (*Server, error) {
+	log = kiro.SafeLogger(log) // 入口统一脱敏：测试/第三方直接传裸 logger 也不能泄漏
 	strip, err := normalize.Compile(cfg.SystemStrip)
 	if err != nil {
 		return nil, err
@@ -96,19 +99,21 @@ func New(bg context.Context, cfg config.Config, p *pool.Pool, log *slog.Logger, 
 	ttl := time.Duration(cfg.SessionTTL)
 	cache := meter.NewCache(nil)
 	s := &Server{
-		cfg:   cfg,
-		pool:  p,
-		log:   log,
-		norm:  normalize.Options{SortTools: cfg.SortTools, SystemStrip: strip},
-		conv:  sessionpin.NewConversationTable(ttl),
-		lines: newTTLMap[[]uint64](ttl),
-		think: newTTLMap[int](ttl),
-		bg:    bg,
+		cfg:            cfg,
+		pool:           p,
+		log:            log,
+		norm:           normalize.Options{SortTools: cfg.SortTools, SystemStrip: strip},
+		conv:           sessionpin.NewConversationTable(ttl),
+		lines:          newTTLMap[[]uint64](ttl),
+		think:          newTTLMap[int](ttl),
+		native:         newTTLMap[nativePin](ttl),
+		threadPrefixes: newTTLMap[systemPrefix](ttl),
+		bg:             bg,
 
 		keys:   st.Keys,
 		usage:  st.Usage,
 		cache:  cache,
-		pricer: &meter.Pricer{Overrides: cfg.Prices, CreditUSD: cfg.CreditUSD, Basis: cfg.CostBasis},
+		pricer: &meter.Pricer{Overrides: cfg.Prices, CreditUSD: cfg.CreditUSD, Basis: cfg.CostBasis, HiddenBilling: cfg.HiddenTokensBilling},
 		holds:  newHoldTable(),
 		hidden: newHiddenWatch(),
 
@@ -116,6 +121,12 @@ func New(bg context.Context, cfg config.Config, p *pool.Pool, log *slog.Logger, 
 		started:     time.Now(),
 		Version:     "dev",
 		openBrowser: kiro.OpenBrowser,
+	}
+	s.configureTransport()
+	if cfg.DebugRequestsEnabled() {
+		// 调试快照目录：启动先清一次，之后周期性有界清理；关停随 bg 收尾。
+		s.pruneDebugRequests()
+		s.bgWG.Go(s.cleanupDebugDir)
 	}
 	if cfg.CacheFile != "" {
 		// prompt cache 与会话状态一起载入；任一坏掉就都从空开始。只影响命中与计量，不阻止启动

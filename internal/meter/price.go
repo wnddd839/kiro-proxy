@@ -24,7 +24,8 @@ type Price struct {
 	LongAbove int    `json:"long_above,omitzero"`
 	Long      *Price `json:"long,omitzero"`
 	// Source 是价格来源：builtin | openrouter | config | fallback。只用于展示。
-	Source string `json:"source,omitzero"`
+	Source  string `json:"source,omitzero"`
+	Warning string `json:"warning,omitzero"`
 }
 
 func (p Price) filled() Price { return p.fill(true) }
@@ -101,8 +102,8 @@ var builtin = map[string]Price{
 	"qwen3-coder-next": {Input: 0.12, Output: 0.8, CacheWrite: 0.12, CacheRead: 0.07},
 }
 
-// fallback 是未知模型的价格（按 Sonnet）。
-var fallback = Price{Input: 3, Output: 15, Source: "fallback"}
+// fallback is a component-wise conservative maximum, not a family guess.
+var fallback = Price{Input: 15, Output: 75, CacheRead: 1.5, CacheWrite: 18.75, CacheWrite1h: 30, Source: "fallback", Warning: "unknown model: highest price tier"}
 
 // Pricer 把用量折算成美元。优先级：配置 Overrides → 在线价格 → 内置表 → fallback。
 type Pricer struct {
@@ -110,7 +111,8 @@ type Pricer struct {
 	// CreditUSD 是一个 Kiro credit 的美元价（Pro 套餐 $20 / 1000 credits = 0.02）。
 	CreditUSD float64
 	// Basis 是对下游报的费用："api"（默认，API 标价等价）或 "credits"（credits × CreditUSD）。
-	Basis string
+	Basis         string
+	HiddenBilling string
 
 	mu       sync.RWMutex
 	online   map[string]Price
@@ -166,13 +168,73 @@ func (p *Pricer) PriceOf(model string) (Price, bool) {
 	v, ok := lookup(p.online, m)
 	p.mu.RUnlock()
 	if ok {
-		return v.fill(isClaude(m)), true
+		return onlinePrice(m, v), true
 	}
-	if v, ok := lookup(builtin, m); ok {
+	if v, ok := knownBuiltin(m); ok {
 		v.Source = "builtin"
 		return v.fill(isClaude(m)), true
 	}
-	return fallback.fill(isClaude(m)), false
+	v = fallback
+	for _, table := range []map[string]Price{p.Table()} {
+		for _, pr := range table {
+			for _, x := range []Price{pr, pr.forPrompt(int(^uint(0) >> 1))} {
+				v.Input = max(v.Input, x.Input)
+				v.Output = max(v.Output, x.Output)
+				v.CacheRead = max(v.CacheRead, x.CacheRead)
+				v.CacheWrite = max(v.CacheWrite, x.CacheWrite)
+				v.CacheWrite1h = max(v.CacheWrite1h, x.CacheWrite1h)
+			}
+		}
+	}
+	return v, false
+}
+
+func knownBuiltin(model string) (Price, bool) {
+	for _, family := range []string{"claude-opus", "claude-sonnet", "claude-haiku"} {
+		if model != family && strings.HasPrefix(model, family+"-") {
+			best := ""
+			var found Price
+			for id, price := range builtin {
+				if id != family && len(id) > len(best) && (model == id || strings.HasPrefix(model, id+"-")) {
+					best, found = id, price
+				}
+			}
+			return found, best != ""
+		}
+	}
+	return lookup(builtin, model)
+}
+
+func onlinePrice(model string, v Price) Price {
+	base, ok := knownBuiltin(model)
+	if !ok {
+		base = fallback
+	}
+	base = base.fill(isClaude(model))
+	return completeOnline(v, base, isClaude(model))
+}
+
+func completeOnline(v, base Price, claude bool) Price {
+	if v.CacheRead <= 0 || v.CacheWrite <= 0 || (claude && v.CacheWrite1h <= 0) {
+		if v.CacheRead <= 0 {
+			v.CacheRead = base.CacheRead
+		}
+		if v.CacheWrite <= 0 {
+			v.CacheWrite = base.CacheWrite
+		}
+		if v.CacheWrite1h <= 0 {
+			v.CacheWrite1h = base.CacheWrite1h
+		}
+		v.Warning = "online cache price missing: builtin/highest tier fallback"
+	}
+	if v.Long != nil {
+		long := completeOnline(*v.Long, base.forPrompt(v.LongAbove+1), claude)
+		v.Long = &long
+		if long.Warning != "" {
+			v.Warning = long.Warning
+		}
+	}
+	return v.fill(claude)
 }
 
 // lookup 先精确匹配，再取最长的「整段」前缀：claude-sonnet-4.5 能匹配 claude-sonnet-4.5-thinking，
@@ -218,14 +280,40 @@ func IsBuiltinID(id string) bool {
 // APICost 是按 API 标价算的美元费用。u.CacheWrite1h 按 1h 写入价，其余写入按 5m 价。
 func (p *Pricer) APICost(model string, u turn.Usage) float64 {
 	pr, _ := p.PriceOf(model)
-	pr = pr.forPrompt(u.PromptTokens())
+	pr = pr.forPrompt(u.PromptTokens() + u.KiroInput)
 	w5 := u.CacheWrite5m()
 	usd := float64(u.Input)*pr.Input +
 		float64(u.Output)*pr.Output +
 		float64(u.CacheRead)*pr.CacheRead +
 		float64(w5)*pr.CacheWrite +
 		float64(u.CacheWrite-w5)*pr.CacheWrite1h
-	return usd / 1e6
+	return usd/1e6 + p.HiddenCost(model, u)
+}
+
+// ReserveCost covers any input cache split and either known context tier.
+// Prompt remains a caller-provided estimate; this is not an upstream token bound.
+func (p *Pricer) ReserveCost(model string, prompt, hidden, output int) float64 {
+	pr, _ := p.PriceOf(model)
+	in, out, client := pr.Input, pr.Output, max(pr.Input, pr.CacheRead, pr.CacheWrite, pr.CacheWrite1h)
+	if pr.Long != nil {
+		l := pr.Long
+		in, out = max(in, l.Input), max(out, l.Output)
+		client = max(client, l.Input, l.CacheRead, l.CacheWrite, l.CacheWrite1h)
+	}
+	cost := float64(prompt)*client + float64(output)*out
+	if p.HiddenBilling != "off" {
+		cost += float64(hidden) * in
+	}
+	return cost / 1e6
+}
+
+func (p *Pricer) HiddenCost(model string, u turn.Usage) float64 {
+	if p.HiddenBilling == "off" {
+		return 0
+	}
+	pr, _ := p.PriceOf(model)
+	pr = pr.forPrompt(u.PromptTokens() + u.KiroInput)
+	return float64(u.KiroInput) * pr.Input / 1e6
 }
 
 // Cost 是对下游报的费用：按 Basis 取 API 等价或 credits 折算。
@@ -251,7 +339,7 @@ func (p *Pricer) Table() map[string]Price {
 	p.mu.RLock()
 	for k, v := range p.online {
 		if _, ok := builtin[k]; ok {
-			out[k] = v.fill(isClaude(k))
+			out[k] = onlinePrice(k, v)
 		}
 	}
 	p.mu.RUnlock()

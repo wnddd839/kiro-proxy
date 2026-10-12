@@ -18,19 +18,20 @@ import (
 //
 // 两本账：CostUSD 是对下游按 Anthropic 口径收的费；UpstreamUSD 是上游成本（credits × credit_usd）。
 type Entry struct {
-	ID       string    `json:"id"`
-	Time     time.Time `json:"time"`
-	Key      string    `json:"key,omitzero"` // 下游 key id；匿名为空
-	KeyName  string    `json:"key_name,omitzero"`
-	Account  string    `json:"account,omitzero"`
-	Model    string    `json:"model"`    // Kiro 模型 id
-	Protocol string    `json:"protocol"` // anthropic | openai-chat | openai-responses
-	Stream   bool      `json:"stream,omitzero"`
-	Status   int       `json:"status"`
-	Error    string    `json:"error,omitzero"`
-	Attempts int       `json:"attempts,omitzero"`
-	Thread   string    `json:"thread,omitzero"`
-	Pinned   bool      `json:"pinned,omitzero"`
+	ID           string    `json:"id"`
+	Time         time.Time `json:"time"`
+	Key          string    `json:"key,omitzero"` // 下游 key id；匿名为空
+	KeyName      string    `json:"key_name,omitzero"`
+	Account      string    `json:"account,omitzero"`
+	Model        string    `json:"model"`    // Kiro 模型 id
+	Protocol     string    `json:"protocol"` // anthropic | openai-chat | openai-responses
+	Stream       bool      `json:"stream,omitzero"`
+	Status       int       `json:"status"`
+	Error        string    `json:"error,omitzero"`
+	Attempts     int       `json:"attempts,omitzero"`
+	Thread       string    `json:"thread,omitzero"`
+	ThreadReason string    `json:"thread_key_change_reason,omitzero"`
+	Pinned       bool      `json:"pinned,omitzero"`
 	// Request 把同一下游请求的各次尝试连起来；只有一次尝试时可以为空
 	Request string `json:"request,omitzero"`
 	// Retried 是没有成为最终回复、换号重试了的尝试。不向下游收费（CostUSD = 0），
@@ -41,9 +42,11 @@ type Entry struct {
 	// CreditsEstimated 表示 Credits 是按 token 估的（上游没来得及报 meteringEvent）
 	CreditsEstimated bool `json:"credits_estimated,omitzero"`
 
-	Input      int `json:"input,omitzero"`
-	CacheRead  int `json:"cache_read,omitzero"`
-	CacheWrite int `json:"cache_write,omitzero"`
+	Input            int     `json:"input,omitzero"`
+	HiddenTokens     int     `json:"hidden_tokens"`
+	HiddenChargedUSD float64 `json:"hidden_tokens_charged_usd"`
+	CacheRead        int     `json:"cache_read,omitzero"`
+	CacheWrite       int     `json:"cache_write,omitzero"`
 	// CacheWrite1h 是 CacheWrite 里按 1h TTL（2 倍价）计的部分
 	CacheWrite1h int     `json:"cache_write_1h,omitzero"`
 	Output       int     `json:"output,omitzero"`
@@ -69,17 +72,19 @@ func (e Entry) Loss() bool { return e.UpstreamUSD > e.CostUSD+1e-12 }
 
 // Totals 是一组记录的累计。
 type Totals struct {
-	Requests     int64   `json:"requests"`
-	Errors       int64   `json:"errors"`
-	Input        int64   `json:"input"`
-	CacheRead    int64   `json:"cache_read"`
-	CacheWrite   int64   `json:"cache_write"`
-	CacheWrite1h int64   `json:"cache_write_1h"`
-	Output       int64   `json:"output"`
-	Reasoning    int64   `json:"reasoning"`
-	Credits      float64 `json:"credits"`
-	CostUSD      float64 `json:"cost_usd"`
-	UpstreamUSD  float64 `json:"upstream_usd"`
+	Requests         int64   `json:"requests"`
+	Errors           int64   `json:"errors"`
+	Input            int64   `json:"input"`
+	HiddenTokens     int64   `json:"hidden_tokens"`
+	HiddenChargedUSD float64 `json:"hidden_tokens_charged_usd"`
+	CacheRead        int64   `json:"cache_read"`
+	CacheWrite       int64   `json:"cache_write"`
+	CacheWrite1h     int64   `json:"cache_write_1h"`
+	Output           int64   `json:"output"`
+	Reasoning        int64   `json:"reasoning"`
+	Credits          float64 `json:"credits"`
+	CostUSD          float64 `json:"cost_usd"`
+	UpstreamUSD      float64 `json:"upstream_usd"`
 	// Losses / LossUSD 是亏损的笔数与亏损金额（上游成本−收费，只累加亏的那些笔）。
 	// 含两类：重试亏损（RetryLosses：换号重试的失败尝试，不收费）与其它（小请求等，按 Anthropic 价收得比成本少）。
 	Losses       int64   `json:"losses"`
@@ -127,6 +132,8 @@ func (t *Totals) Add(o Totals) {
 	t.Requests += o.Requests
 	t.Errors += o.Errors
 	t.Input += o.Input
+	t.HiddenTokens += o.HiddenTokens
+	t.HiddenChargedUSD += o.HiddenChargedUSD
 	t.CacheRead += o.CacheRead
 	t.CacheWrite += o.CacheWrite
 	t.CacheWrite1h += o.CacheWrite1h
@@ -156,6 +163,8 @@ func (t *Totals) addEntry(e Entry) {
 		}
 	}
 	t.Input += int64(e.Input)
+	t.HiddenTokens += int64(e.HiddenTokens)
+	t.HiddenChargedUSD += e.HiddenChargedUSD
 	t.CacheRead += int64(e.CacheRead)
 	t.CacheWrite += int64(e.CacheWrite)
 	t.CacheWrite1h += int64(e.CacheWrite1h)

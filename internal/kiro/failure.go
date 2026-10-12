@@ -26,6 +26,9 @@ const (
 	ClassForbidden
 	// ClassBanned 是号被封 / 暂停（TemporarilySuspended、423）。刷新 token 救不回来：停用该号并换号。
 	ClassBanned
+	// ClassSoftBan 是触发风控的 429（异常 / 可疑活动）：号不是被封，但要长冷却 24 小时并告警，必须换号。
+	// 与普通限流（ClassThrottle）不同：这是上游对账号行为的软封，冷却窗口远大于限流退避。
+	ClassSoftBan
 )
 
 // Failure 是上游非 2xx 响应翻译成的下游状态、消息与分类。
@@ -78,13 +81,21 @@ func Banned(status int, body []byte) bool {
 // 不认 "exceeded"：429 "Rate exceeded" 是限流，误判成额度会把号冷却到月度重置。
 var quotaWords = regexp.MustCompile(`(?i)MONTHLY_REQUEST_COUNT|USAGE_LIMIT|quota|usage.?limit|reached the limit`)
 
+// suspiciousWords 是上游风控 / 异常活动的文案：这是对号的软封（长冷却），不是普通限流。
+// 只看原文，不看被 Diagnostic 清理后的消息：分类信号必须来自原始返回体。
+var suspiciousWords = regexp.MustCompile(`(?i)suspicious|unusual activity|abnormal (activity|behaviou?r)|risk.?control`)
+
 // Classify 把 generateAssistantResponse 的失败响应映射成下游语义。
 func Classify(status int, body []byte) Failure {
 	msg := errorMessage(status, body)
 	lower := strings.ToLower(msg)
+	rawLower := strings.ToLower(string(body))
 	switch {
 	case Banned(status, body):
 		return Failure{Status: 403, Message: "account suspended: " + msg, Class: ClassBanned}
+	case (status == http.StatusTooManyRequests || status == http.StatusForbidden) && suspiciousWords.MatchString(rawLower):
+		// 风控 429：不是普通限流，长冷却并告警；必须换号
+		return Failure{Status: status, Message: "suspicious activity: " + msg, Class: ClassSoftBan}
 	case strings.Contains(msg, "CONTENT_LENGTH_EXCEEDS_THRESHOLD") || strings.Contains(lower, "input is too long"):
 		return Failure{Status: 400, Message: "input is too long for the model's context: " + msg, Class: ClassFatal}
 	case strings.Contains(msg, "INSUFFICIENT_MODEL_CAPACITY"):
@@ -115,6 +126,10 @@ func Classify(status int, body []byte) Failure {
 func ClassifyStream(text string) Failure {
 	lower := strings.ToLower(text)
 	switch {
+	case Banned(403, []byte(text)):
+		return Failure{Status: 403, Message: "account suspended: " + text, Class: ClassBanned}
+	case suspiciousWords.MatchString(text):
+		return Failure{Status: 429, Message: text, Class: ClassSoftBan}
 	case strings.Contains(text, "CONTENT_LENGTH_EXCEEDS_THRESHOLD") || strings.Contains(lower, "input is too long"):
 		return Failure{Status: 400, Message: text, Class: ClassFatal}
 	case strings.Contains(text, "USAGE_LIMIT") || strings.Contains(text, "MONTHLY_REQUEST_COUNT"):
