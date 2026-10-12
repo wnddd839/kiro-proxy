@@ -544,7 +544,7 @@ func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool
 		if k.Reported && po.mode != kiro.ReportedIgnore {
 			seed.KiroInput = s.cfg.HiddenTokensOf(c.model)
 		}
-		u := reportedUsage(seed, k, po)
+		u := s.priced(c.model, reportedUsage(seed, k, po))
 		u.CacheWrite1h = meter.Scale1h(input.CacheWrite1h, input.CacheWrite, u.CacheWrite)
 		s.noteReported(c, id, input, k)
 		s.charge(id, c, u)
@@ -688,10 +688,11 @@ func (s *Server) charge(id string, c *call, u turn.Usage) {
 // 中断、失败、成功三条路径都用它。
 func (s *Server) estimateCredits(model string, u turn.Usage) (turn.Usage, bool) {
 	if u.Credits != 0 || (u.PromptTokens() == 0 && u.Output == 0) {
-		return u, false
+		return u, u.CreditsEstimated
 	}
 	u.Credits = meter.EstimateCredits(meter.CreditRateOf(model, s.cfg.CreditRates), u, u.KiroInput)
-	return u, u.Credits > 0
+	u.CreditsEstimated = u.Credits > 0
+	return u, u.CreditsEstimated
 }
 
 // retried 给一次换号重试了的尝试单独记一行。失败尝试不向下游收费：CostUSD = 0，
@@ -713,9 +714,10 @@ func (s *Server) retried(c *call, id string, f kiro.Failure, u turn.Usage, took 
 
 // priced 补上费用；上游没来得及报 credits（中断时常见）时按 token 估一个。
 func (s *Server) priced(model string, u turn.Usage) turn.Usage {
+	u, _ = s.estimateCredits(model, u)
 	u.CostUSD = s.pricer.Cost(model, u)
 	u.HiddenChargedUSD = s.pricer.HiddenCost(model, u)
-	if s.pricer.Basis == meter.BasisCredits && u.Credits > 0 {
+	if s.pricer.Basis == meter.BasisCredits && u.Credits > 0 && s.pricer.CreditUSD > 0 {
 		u.HiddenChargedUSD = 0
 	}
 	return u
@@ -724,8 +726,8 @@ func (s *Server) priced(model string, u turn.Usage) turn.Usage {
 // fillUsage 把一次尝试的用量写进账本行，算两本账：对下游收费（Anthropic 口径）与上游成本。
 // 上游没报 credits 而用量非零时按 token 估 credits，并标 CreditsEstimated。
 func (s *Server) fillUsage(e *usage.Entry, u turn.Usage) {
-	u, e.CreditsEstimated = s.estimateCredits(e.Model, u)
 	u = s.priced(e.Model, u)
+	e.CreditsEstimated = u.CreditsEstimated
 	e.Input, e.CacheRead, e.CacheWrite, e.CacheWrite1h = u.Input, u.CacheRead, u.CacheWrite, u.CacheWrite1h
 	e.Output, e.Reasoning = u.Output, u.Reasoning
 	e.Credits, e.CostUSD = u.Credits, u.CostUSD

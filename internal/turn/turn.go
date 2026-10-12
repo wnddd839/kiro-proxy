@@ -31,8 +31,9 @@ type Usage struct {
 	Output       int
 	Reasoning    int // Output 中 thinking 的部分
 
-	Credits float64 // Kiro 实际计量的 credits
-	CostUSD float64 // 内部记账（key 预算 LimitUSD）；不下发给下游
+	Credits          float64 // Kiro 实际计量的 credits
+	CreditsEstimated bool    // 未上报 credits 时由本地估算，结算后保留来源
+	CostUSD          float64 // 内部记账（key 预算 LimitUSD）；不下发给下游
 }
 
 // PromptTokens 是全部输入 token。
