@@ -854,12 +854,12 @@ func TestCredRefreshRejectedDisables(t *testing.T) {
 	if err == nil || !kiro.IsGone(err) {
 		t.Fatalf("err = %v, want gone", err)
 	}
-	// a 是唯一的启用号：last-account 保护，不停用，改长冷却并告警
+	// invalid_grant 是永久失效，唯一账号也必须明确停用。
 	v, _ := p.Get("a")
-	if v.Disabled || v.CooldownUntil.Before(time.Now().Add(23*time.Hour)) {
-		t.Fatalf("last account must be kept with a long cooldown: %+v", v)
+	if !v.Disabled || !strings.Contains(v.Note, "sign-in expired") {
+		t.Fatalf("expired account must be disabled: %+v", v)
 	}
-	// 再加一个号：a 不再是最后一个启用号，invalid_grant 立即停用
+	// 加入替换账号后分发到新账号。
 	mustAdd(t, p, Account{ID: "b", Cred: freshCred("b")})
 	_, err = p.Cred(t.Context(), "a", "")
 	if err == nil || !kiro.IsGone(err) {
@@ -1167,7 +1167,7 @@ func TestRefresh401ThreeStrikes(t *testing.T) {
 	c := freshCred("old")
 	c.ExpiresAt = time.Now().Add(-time.Minute)
 	mustAdd(t, p, Account{ID: "a", Cred: c})
-	// 第二个号：a 不再是最后一个启用号，连续 3 次 401 会停用 a
+	// 另一个账号用于验证失败只影响 a。
 	mustAdd(t, p, Account{ID: "b", Cred: freshCred("b")})
 
 	fk.refreshCode.Store(http.StatusUnauthorized)
@@ -1249,11 +1249,9 @@ func TestBreakerRefresh403StormDisablesNone(t *testing.T) {
 	}
 }
 
-// 熔断有下限：只有一个号在失败时按单号逻辑走，连续 3 次 401 停号——但最后一个启用号受保护，不停用。
+// 只有一个号失败时按单号逻辑走，连续 3 次 401 停用。
 func TestBreakerSingleAccount401StillDisables(t *testing.T) {
 	for _, accounts := range []int{1, 5} {
-		// accounts=1：唯一启用号，last-account 保护，不停用；accounts=5：a0 会停用
-		wantDisabled := accounts == 5
 		t.Run(fmt.Sprint(accounts), func(t *testing.T) {
 			fk := newFakeKiro(t)
 			fk.refreshCode.Store(http.StatusUnauthorized)
@@ -1264,7 +1262,7 @@ func TestBreakerSingleAccount401StillDisables(t *testing.T) {
 			for i := 1; i <= maxRefreshFailures; i++ {
 				_, _ = p.ForceRefresh(t.Context(), "a0")
 				v, _ := p.Get("a0")
-				if want := wantDisabled && i == maxRefreshFailures; v.Disabled != want {
+				if want := i == maxRefreshFailures; v.Disabled != want {
 					t.Fatalf("after %d: disabled %v (want %v) fails %d", i, v.Disabled, want, v.RefreshFails)
 				}
 			}

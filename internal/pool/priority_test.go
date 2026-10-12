@@ -132,7 +132,7 @@ func TestBreakerWindowSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestLastAccountRefreshFailureNeverDisables(t *testing.T) {
+func TestLastAccountRepeatedRefreshFailureDisables(t *testing.T) {
 	f := newFakeKiro(t)
 	f.refreshCode.Store(401)
 	p, _ := openPool(t, f.client())
@@ -141,25 +141,19 @@ func TestLastAccountRefreshFailureNeverDisables(t *testing.T) {
 		_, _ = p.ForceRefresh(t.Context(), "only")
 	}
 	v, _ := p.Get("only")
-	if v.Disabled {
-		t.Fatalf("last account disabled: %+v", v)
-	}
-	if v.CooldownUntil.Before(time.Now().Add(23 * time.Hour)) {
-		t.Fatalf("last account should be cooled (kept), got %+v", v)
+	if !v.Disabled || !strings.Contains(v.Note, "refresh failed") {
+		t.Fatalf("repeatedly rejected account not disabled: %+v", v)
 	}
 }
 
-// 最后一个启用号被封（ClassBanned）也不停用：改长冷却并告警。
-func TestLastAccountBannedNeverDisables(t *testing.T) {
+// 明确被封的账号应停用，与当前启用账号数无关。
+func TestLastAccountBannedDisables(t *testing.T) {
 	p, _ := openPool(t, nil)
 	mustAdd(t, p, Account{ID: "only", Cred: freshCred("only")})
 	p.Fail("only", kiro.Failure{Status: 403, Message: "account suspended: TemporarilySuspended", Class: kiro.ClassBanned})
 	v, _ := p.Get("only")
-	if v.Disabled {
-		t.Fatalf("last account disabled on ban: %+v", v)
-	}
-	if v.CooldownUntil.Before(time.Now().Add(23 * time.Hour)) {
-		t.Fatalf("last account ban should long-cool, got %+v", v)
+	if !v.Disabled || !strings.Contains(v.Note, "suspended") {
+		t.Fatalf("suspended account not disabled: %+v", v)
 	}
 	// 有两个号时可正常停用被封的
 	mustAdd(t, p, Account{ID: "b", Cred: freshCred("b")})
@@ -214,8 +208,8 @@ func TestStateSidecarAtomicUnderConcurrentSaves(t *testing.T) {
 	}
 }
 
-// 最后一个启用号刷新被封：last-account 保护的长冷却必须落盘，重启后仍在。
-func TestLastAccountBannedViaRefreshCooldownPersists(t *testing.T) {
+// 最后一个号明确被封时也停用；重启后状态保留。
+func TestLastAccountBannedViaRefreshDisablesPersistently(t *testing.T) {
 	f := newFakeKiro(t)
 	f.refreshCode.Store(403)
 	f.refreshBody = `{"message":"Your account is TemporarilySuspended"}`
@@ -225,16 +219,16 @@ func TestLastAccountBannedViaRefreshCooldownPersists(t *testing.T) {
 	mustAdd(t, p, Account{ID: "only", Cred: c})
 	_, _ = p.ForceRefresh(t.Context(), "only")
 	v, _ := p.Get("only")
-	if v.Disabled || v.CooldownUntil.Before(time.Now().Add(23*time.Hour)) {
-		t.Fatalf("last account refresh-ban should be kept with a long cooldown: %+v", v)
+	if !v.Disabled || !strings.Contains(v.Note, "account suspended") {
+		t.Fatalf("suspended account must be disabled: %+v", v)
 	}
 	n, err := Open(path, Options{Logger: quiet()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	v, _ = n.Get("only")
-	if v.Disabled || v.CooldownUntil.Before(time.Now().Add(23*time.Hour)) {
-		t.Fatalf("last-account ban cooldown lost across restart: %+v", v)
+	if !v.Disabled || !strings.Contains(v.Note, "account suspended") {
+		t.Fatalf("disabled state lost across restart: %+v", v)
 	}
 }
 
@@ -295,8 +289,8 @@ func TestCountedStrikesExpireOnRestart(t *testing.T) {
 	}
 }
 
-// 最后一个启用号刷新报 invalid_grant（Gone）：同样要保住长冷却并落盘。
-func TestLastAccountGoneViaRefreshCooldownPersists(t *testing.T) {
+// invalid_grant 需要重新登录，最后一个号也应停用并落盘。
+func TestLastAccountGoneViaRefreshDisablesPersistently(t *testing.T) {
 	f := newFakeKiro(t)
 	f.refreshCode.Store(400)
 	f.refreshBody = `{"error":"invalid_grant","error_description":"expired"}`
@@ -309,16 +303,16 @@ func TestLastAccountGoneViaRefreshCooldownPersists(t *testing.T) {
 		t.Fatalf("err = %v, want gone", err)
 	}
 	v, _ := p.Get("only")
-	if v.Disabled || v.CooldownUntil.Before(time.Now().Add(23*time.Hour)) {
-		t.Fatalf("last account gone should be kept with a long cooldown: %+v", v)
+	if !v.Disabled || !strings.Contains(v.Note, "sign-in expired") {
+		t.Fatalf("expired sign-in must be disabled: %+v", v)
 	}
 	n, err := Open(path, Options{Logger: quiet()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	v, _ = n.Get("only")
-	if v.Disabled || v.CooldownUntil.Before(time.Now().Add(23*time.Hour)) {
-		t.Fatalf("last-account gone cooldown lost across restart: %+v", v)
+	if !v.Disabled || !strings.Contains(v.Note, "sign-in expired") {
+		t.Fatalf("expired sign-in state lost across restart: %+v", v)
 	}
 }
 

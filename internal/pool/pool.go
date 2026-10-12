@@ -516,20 +516,9 @@ func (p *Pool) enabledCountLocked() int {
 	return n
 }
 
-// disableLocked 是自动停用路径（封号 / 刷新失效 / 连续刷新失败）的统一入口：由 p.mu 保护。
-// 绝不停用最后一个启用号（那会让号池彻底不可用）；拒绝时返回 false，调用方应改为长时间冷却并告警。
-// note 必须是已脱敏文本。
-func (p *Pool) disableLocked(s *slot, note string) bool {
-	if s.acct.Disabled {
-		return true
-	}
-	if p.enabledCountLocked() <= 1 {
-		p.log.Error("refusing to disable the last enabled account; keeping it and cooling instead",
-			"account", s.acct.ID, "reason", note)
-		return false
-	}
+// disableLocked 在 p.mu 下停用失效账号；保留记录供重新登录。
+func (p *Pool) disableLocked(s *slot, note string) {
 	s.acct.Disabled, s.acct.Note = true, note
-	return true
 }
 
 // SetMaxConcurrent 改一个号的并发上限并落盘；0 用号池默认。
@@ -1023,10 +1012,7 @@ func (p *Pool) Fail(id string, f kiro.Failure) (retry bool) {
 		p.suspectLocked(FailForbidden, id, now)
 		p.coolLocked(s, now.Add(time.Minute), "forbidden: "+kiro.Diagnostic(f.Message))
 	case kiro.ClassBanned:
-		if !p.disableLocked(s, kiro.Diagnostic(f.Message)) {
-			// 最后一个启用号：不停号，按长时间冷却处理，等上游恢复 / 人工介入
-			p.coolLocked(s, now.Add(softBanCooldown), "account suspended (last enabled; kept): "+kiro.Diagnostic(f.Message))
-		}
+		p.disableLocked(s, kiro.Diagnostic(f.Message))
 	}
 	banned := f.Class == kiro.ClassBanned
 	p.mu.Unlock()
@@ -1161,32 +1147,22 @@ func (p *Pool) refreshFailed(ctx context.Context, id string, s *slot, err error)
 	switch {
 	case isKiro && kiro.Banned(e.Status, []byte(e.Body)):
 		p.mu.Lock()
-		ok := p.disableLocked(s, "account suspended: "+kiro.Diagnostic(err.Error()))
-		if !ok {
-			p.coolLocked(s, p.now().Add(softBanCooldown), "account suspended (last enabled; kept): "+kiro.Diagnostic(err.Error()))
-		}
+		p.disableLocked(s, "account suspended: "+kiro.Diagnostic(err.Error()))
 		p.mu.Unlock()
 		p.log.Error("account suspended upstream", "account", id, "err", err)
 		p.saveState()
-		if ok {
-			if serr := p.save(); serr != nil {
-				p.log.Error("save pool", "err", serr)
-			}
+		if serr := p.save(); serr != nil {
+			p.log.Error("save pool", "err", serr)
 		}
 		return
 	case kiro.IsGone(err):
 		p.mu.Lock()
-		ok := p.disableLocked(s, "sign-in expired: "+kiro.Diagnostic(err.Error()))
-		if !ok {
-			p.coolLocked(s, p.now().Add(softBanCooldown), "sign-in expired (last enabled; kept): "+kiro.Diagnostic(err.Error()))
-		}
+		p.disableLocked(s, "sign-in expired: "+kiro.Diagnostic(err.Error()))
 		p.mu.Unlock()
 		p.log.Error("account disabled", "account", id, "err", err)
 		p.saveState()
-		if ok {
-			if serr := p.save(); serr != nil {
-				p.log.Error("save pool", "err", serr)
-			}
+		if serr := p.save(); serr != nil {
+			p.log.Error("save pool", "err", serr)
 		}
 		return
 	case kiro.IsReregister(err):
@@ -1230,14 +1206,8 @@ func (p *Pool) refreshFailed(ctx context.Context, id string, s *slot, err error)
 	n := s.refreshFails
 	p.countStrikeLocked(kind, id, p.now()) // 记录：若之后熔断触发，这些失败要整体回退
 	p.coolLocked(s, p.now().Add(refreshCooldown), fmt.Sprintf("refresh failed (%d/%d): %v", n, maxRefreshFailures, kiro.Diagnostic(err.Error())))
-	disable := false
-	// 最后一个启用号连续刷新失败也不停用：改长冷却并告警，等它能自己恢复。
 	if n >= maxRefreshFailures {
-		if p.disableLocked(s, fmt.Sprintf("refresh failed %d times in a row: %v", n, kiro.Diagnostic(err.Error()))) {
-			disable = true
-		} else {
-			p.coolLocked(s, p.now().Add(softBanCooldown), fmt.Sprintf("refresh failed %d times (last enabled; kept): %v", n, kiro.Diagnostic(err.Error())))
-		}
+		p.disableLocked(s, fmt.Sprintf("refresh failed %d times in a row: %v", n, kiro.Diagnostic(err.Error())))
 	}
 	p.mu.Unlock()
 	if n >= maxRefreshFailures {
@@ -1245,11 +1215,7 @@ func (p *Pool) refreshFailed(ctx context.Context, id string, s *slot, err error)
 		if err := p.save(); err != nil {
 			p.log.Error("save pool", "err", err)
 		}
-		if disable {
-			p.log.Error("account disabled after repeated refresh failures", "account", id, "failures", n, "err", err)
-		} else {
-			p.log.Error("last enabled account kept after repeated refresh failures; cooling instead", "account", id, "failures", n, "err", err)
-		}
+		p.log.Error("account disabled after repeated refresh failures", "account", id, "failures", n, "err", err)
 		return
 	}
 	p.saveState()
