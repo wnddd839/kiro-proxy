@@ -1,5 +1,10 @@
 # Kiro-proxy priority fixes acceptance (2026-10-10)
 
+> Historical acceptance snapshot. The subsequent review changed authentication,
+> lifetime budgets, reservations, stream usage, journal fault handling and the
+> last-account policy. See [review-fixes.md](review-fixes.md) and README.md for
+> current behavior; the status table below describes the earlier snapshot.
+
 ## Scope and verification
 
 No git staging or commits. No production startup, live account probing, or edits

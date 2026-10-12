@@ -102,7 +102,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
 export OPENAI_BASE_URL=http://127.0.0.1:8787/v1
 ```
 
-鉴权：管理台建了 key 或配置了 `api_keys` 后，带 `x-api-key` 或 `Authorization: Bearer`；两者都没配时不校验。管理台「接入」页可一键生成 API Key。
+鉴权：管理台建了 key 或配置了 `api_keys` 后，带 `x-api-key` 或 `Authorization: Bearer`。从未配置 key 的本机部署允许匿名使用；key 库一旦启用鉴权，删除最后一把 key 后仍要求鉴权，并通过 `require_auth` 保存该状态。无效凭据使 key 库加载失败。管理台「接入」页可一键生成替换 API Key。
 
 ## 服务器反向代理与出站代理
 
@@ -176,16 +176,16 @@ location /kiro/ {
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `listen` | `127.0.0.1:8787` | 无可用 API key 的非 loopback 监听拒绝启动；仅显式 `-allow-insecure-listen` 可覆盖并醒目告警 |
+| `listen` | `127.0.0.1:8787` | 未启用下游鉴权的非 loopback 监听拒绝启动；仅显式 `-allow-insecure-listen` 可覆盖并醒目告警 |
 | `accounts_file` | `accounts.json` | 号池文件，含 token，0600，已在 .gitignore |
 | `api_keys` | 空 | 不记名、不受预算约束的全权 key（自用） |
 | `keys_file` | `keys.json` | 管理台生成的下游 key。只存 secret 的 sha256；明文只在新建 / 换 secret 时显示一次 |
 | `usage_file` | `usage.jsonl` | 用量账本；空字符串 = 只记内存 |
-| `usage_retention` | `2160h` | 账本保留期（90 天） |
+| `usage_retention` | `2160h` | 明细与查询聚合保留期（90 天）；累计预算独立保存，不随明细过期清零 |
 | `cache_mode` | `auto` | 本地 cache 计量：所有协议自动模拟 5m 前缀缓存，不要求 `cache_control`；`protocol` = Messages 走 `explicit`、Chat / Responses 走 `auto`；`explicit` = 只认客户端断点；`off` = 关闭模拟 |
 | `cache_ttl` | `client` | `explicit` / `protocol` 模式下，客户端声明 `ttl:"1h"` 时：`client` = 按 1h 计；`5m` = 一律按 5m 计。`auto` 固定按 5m 计 |
 | `cache_points` | 空 | 实验：给 Kiro 发显式 `cachePoint{type:"default"}` 的位置（`first-user` / `assistant` / `tools`）。探测无效果，保持关闭 |
-| `credit_rates` | 内置拟合值 | 按 token 估 credits 的系数，模型前缀 → `{"context","output","read_factor"}`（每百万 token 的 credits），只用于上游没来得及报 credits 的中断请求 |
+| `credit_rates` | 内置拟合值 | 按 token 估 credits 的系数，模型前缀 → `{"context","output","read_factor"}`（每百万 token 的 credits），用于上游未报 credits 的请求及预算预留 |
 | `reported_usage` | `conservative` | `conservative` / `raw` 按字段保留最后上报值；`sum` 累加，`ignore` 用本地计量。输入报告中的隐藏项独立拆出，见用量口径说明 |
 | `hidden_tokens_billing` | `input` | `input` 按输入价收费；`off` 不收隐藏项 API 价，展示仍单独记录 |
 | `hidden_tokens` | 空 | 精确规范模型 id → 隐藏 token 数，缺省 4052；未实测模型标未校准 |
@@ -244,8 +244,9 @@ Kiro 的流里一般**不报 token**，只报上下文占用百分比和 credits
 - **cache_read / cache_creation**：默认 `cache_mode: "auto"`，三种协议都自动模拟 5 分钟滑动 TTL 的前缀缓存，忽略客户端 `cache_control`。这样 OpenAI → sub2api → Anthropic 的链路即使没有缓存断点，也能返回缓存读写估算。设为 `protocol` 时，Anthropic Messages 才按客户端 `cache_control`（含顶层自动缓存）计量：每个断点往前回看 20 块，最多 4 个断点，支持 1h TTL；OpenAI 仍走自动缓存。最小可缓存长度按官方分模型表（512 / 1024 / 2048 / 4096）。这些拆分是本地模拟，不证明上游实际命中；上游报告输入侧 `tokenUsage` 时，按 `reported_usage` 配置采用报告值。
 - **两本账**：对下游收费（`cost_usd`，Claude API 官方价）与上游成本（`upstream_usd` = credits × `credit_usd`），管理台按 key / 号 / 模型 / 天显示毛利率与亏损。
 - **中断与重试**：客户端中断按已消耗量入账（`aborted`）；上游没报 credits 则按 token 估（`credits_estimated`）。换号重试的失败尝试单独一行（`retried`），不向下游收费。
-- **下游 usage**：标准字段报 token 与 Kiro credits；扩展 `hidden_tokens_charged_usd` 单独报隐藏项美元归因。流式 `message_start.usage` 为保守本地估算，`message_delta.usage` 为不倒退的累计展示值（不能相加）。最终实际收费口径在同级 `settled_usage`，可能低于展示估算；计费客户端必须读取该扩展。Kiro 基线计费调整只作用于升级后的请求，不重算历史账本；接入方应据此更新计费说明。
-- key 预算按各自周期（day / week / month / total，本地时区）累计，超限返回 402 + `x-should-retry: false`。准入原子检查已用 + 在途预留 + 本请求预留，不足返回 402；完成时实际结算并释放。预留覆盖完整 max_tokens 和历史估算，但上游 credits / 输入估算不是严格上界，不能宣称绝对不会超支。
+- **下游 usage**：标准字段报 token 与 credits；上游未报 credits 时返回本地估计，账本标记 `credits_estimated`，响应与账号统计使用同一结算值。扩展 `hidden_tokens_charged_usd` 单独报隐藏项美元归因。流式 `message_start.usage` 在最终输入未知时为零，`message_delta.usage` 为实际结算值（不能相加），同级 `settled_usage` 为兼容旧接入方保留同一值。基线计费调整只作用于升级后的请求，不重算历史账本。
+- key 预算按各自周期（day / week / month / total，本地时区）累计，超限返回 402 + `x-should-retry: false`。准入原子检查已用 + 在途预留 + 本请求预留；完成时实际结算并释放。预留按本请求的计费口径、输入估计、完整 max_tokens、适用缓存 TTL 与上下文档位计算，不再叠加输入翻倍和历史平均费用。上游用量仍可能超过本地估计。`total` 的累计请求数、credits 和费用不受明细保留期影响；已被旧版本丢弃的历史无法恢复。
+- **账本故障**：写入失败或待写积压达到 32 MiB 时暂停新生成请求并返回 503，`/health` 同样返回 503。已接收请求的记录继续保留；后台重试成功后恢复接单。阈值用于接单控制，在途请求完成时缓冲可暂时超过阈值。
 
 ## 失败处理
 
@@ -253,9 +254,9 @@ Kiro 的流里一般**不报 token**，只报上下文占用百分比和 credits
 |---|---|
 | 401 / 明确的 token 失效 403 | 单飞 refresh 后同号重试 |
 | 其它 403（策略 / 防火墙） | 不刷新，短冷却并换号 |
-| refresh 返回 400 `invalid_grant` | 尝试停用；最后一个启用号只告警并冷却 24h，不自动停用 |
-| refresh 的其它 4xx | 冷却并计数，连续 3 次尝试停用；最后一个启用号保留并告警；刷新成功清零该号连续计数 |
-| 封号（403 `TemporarilySuspended` 等 / 423） | 不刷新、尝试停用该号；最后一个启用号只告警并冷却 24h |
+| refresh 返回 400 `invalid_grant` | 停用并保留记录，提示重新登录；唯一账号也执行 |
+| refresh 的其它 4xx | 冷却并计数，连续 3 次停用；刷新成功清零该号连续计数 |
+| 封号（403 `TemporarilySuspended` 等 / 423） | 不刷新、停用并保留记录；唯一账号也执行 |
 | 额度用尽（含 402） | 冷却至额度重置（未知则 1h），换号 |
 | 429 / throttling | 冷却：上游给了 `x-amzn-kiro-ratelimit-retry-after` 就按它，否则指数退避；换号 |
 | 429 / 403 / 流异常中的 suspicious activity | 软封，独立冷却 24h 并告警，不按普通限流退避 |
@@ -263,10 +264,11 @@ Kiro 的流里一般**不报 token**，只报上下文占用百分比和 credits
 | 输入太长 / 校验错 | 直接返回，不换号 |
 | 全部不可用 | 429 + `Retry-After` |
 
-熔断依据窗口内请求结果，同类失败率超过 50% 且至少 2 个号失败时触发；单次成功只增加分母，不清空失败历史。触发时回退该窗口内已计的刷新 strike。最后一个启用号不触发全局熔断，不自动停用，但冷却期间仍会拒绝准入，避免持续冲击上游。
+熔断依据窗口内请求结果，同类失败率超过 50% 且至少 2 个号失败时触发；单次成功只增加分母，不清空失败历史。触发时回退该窗口内已计的刷新 strike。唯一启用号不触发全局熔断；明确封号或凭证失效仍会停用，临时网络错误继续采用冷却。
 
 冷却、请求及费用统计、strike 和熔断窗口结果存入 `accounts_file + ".state.json"` 非凭证 sidecar，临时文件加 rename 原子写入。启动恢复未过期冷却，丢弃过期冷却；不保存 token，不保存 lastUsed 和额度轮询基线。手动停用仍按管理操作执行。
 
+- 工具参数 JSON 损坏或被本地输出上限截断时报告错误，不改写成 `{}`；合法的空参数仍为 `{}`。
 - 非流式：整条收完才回写。上游中途报错或断流时丢掉半截内容，记到号上并换号；没有可换的号就回错误状态码，绝不把半句话当 `end_turn`。
 - 流式：已开始向下游写 SSE 后不再换号。中途报错 / 断流发 `error` 事件（不发 `message_stop`），同时记到号上。
 - 钉的号只是并发打满：先排队等它（最多 3 秒），等不到返回 429 + `Retry-After`，不借号；客户端取消排队时停止请求。
