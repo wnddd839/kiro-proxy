@@ -106,13 +106,8 @@ func reportedUsage(u turn.Usage, k kiro.Usage, po pumpOpts) turn.Usage {
 
 func pump(ctx context.Context, dec *kiro.Decoder, first kiro.Event, sink turn.Sink, input turn.Usage, settle func(turn.Usage, kiro.Usage) turn.Usage, po pumpOpts) reply {
 	ctx, cancel := context.WithCancel(ctx)
-	// The accepted calibration range begins at 0.5; this is an estimate, not an upstream guarantee.
-	initial := input
-	initial.Input /= 2
-	initial.CacheRead /= 2
-	initial.CacheWrite /= 2
-	initial.CacheWrite1h = min(initial.CacheWrite, initial.CacheWrite1h/2)
-	sink.Begin(initial)
+	// 最终输入用量尚未知，起始事件不把本地估计当作已结算用量。
+	sink.Begin(turn.Usage{})
 
 	// 上游在长 thinking 时可能很久不出字，定时 ping 防止客户端 / 代理断开
 	events := make(chan kiro.Event)
@@ -339,7 +334,6 @@ type anthropicStream struct {
 	id, model string
 	index     int
 	open      string
-	initial   turn.Usage
 }
 
 func newAnthropicStream(w http.ResponseWriter, id, model string) turn.Sink {
@@ -372,7 +366,6 @@ func (a *anthropicStream) delta(d map[string]any) {
 }
 
 func (a *anthropicStream) Begin(u turn.Usage) {
-	a.initial = u
 	h := a.w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -418,16 +411,10 @@ func (a *anthropicStream) Ping() { a.send("ping", map[string]any{}) }
 
 func (a *anthropicStream) End(stop string, u turn.Usage) {
 	a.closeBlock()
-	actual := anthropicUsage(u)
-	u.Input = max(u.Input, a.initial.Input)
-	u.CacheRead = max(u.CacheRead, a.initial.CacheRead)
-	u.CacheWrite = max(u.CacheWrite, a.initial.CacheWrite)
-	u.CacheWrite1h = min(u.CacheWrite, max(u.CacheWrite1h, a.initial.CacheWrite1h))
-	u.KiroInput = max(u.KiroInput, a.initial.KiroInput)
 	a.send("message_delta", map[string]any{
 		"delta":         map[string]any{"stop_reason": stop, "stop_sequence": stopSequence(u)},
 		"usage":         anthropicUsage(u),
-		"settled_usage": actual,
+		"settled_usage": anthropicUsage(u),
 	})
 	a.send("message_stop", map[string]any{})
 }

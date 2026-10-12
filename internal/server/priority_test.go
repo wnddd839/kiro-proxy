@@ -236,7 +236,7 @@ func TestConcurrentUSDReservationsSettleAndRelease(t *testing.T) {
 	}
 }
 
-func TestStreamStartEstimateAndActualSettlement(t *testing.T) {
+func TestStreamStartUnknownAndFinalUsageMatchesSettlement(t *testing.T) {
 	h := newHarness(t, 1, nil)
 	h.up.stream = func(string) []byte {
 		b := frame("assistantResponseEvent", `{"content":"ok"}`)
@@ -267,12 +267,12 @@ func TestStreamStartEstimateAndActualSettlement(t *testing.T) {
 			end, actual = ev.Usage, ev.Actual
 		}
 	}
-	if start == nil || end == nil || actual == nil || start["cache_creation_input_tokens"].(float64) <= 0 {
-		t.Fatalf("no start estimate: %v %v %v", start, end, actual)
+	if start == nil || end == nil || actual == nil || start["cache_creation_input_tokens"] != float64(0) || start["hidden_tokens"] != float64(0) {
+		t.Fatalf("unsettled input shown at start: %v %v %v", start, end, actual)
 	}
 	for _, field := range []string{"input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "hidden_tokens", "output_tokens"} {
-		if end[field].(float64) < start[field].(float64) {
-			t.Fatalf("usage regressed: %s", field)
+		if end[field] != actual[field] {
+			t.Fatalf("standard usage differs from settlement: %s standard=%v actual=%v", field, end[field], actual[field])
 		}
 	}
 	e := waitRequests(t, h, usage.Query{}, 1).Entries[0]
