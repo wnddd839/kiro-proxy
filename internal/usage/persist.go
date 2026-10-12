@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -145,19 +146,26 @@ func (j *Journal) Flush() error {
 	j.mu.Lock()
 	buf := j.pending
 	j.pending = nil
+	j.flushing = len(buf)
 	j.mu.Unlock()
 	if len(buf) == 0 {
 		return nil
 	}
 
 	err := appendFile(j.path, buf)
+	j.mu.Lock()
+	previous := j.writeErr
+	j.flushing = 0
+	j.writeErr = err
 	if err != nil {
-		// 放回队首，保持顺序
-		j.mu.Lock()
-		if len(buf)+len(j.pending) <= maxPending {
-			j.pending = append(buf, j.pending...)
-		}
-		j.mu.Unlock()
+		// 已接收记录不得丢弃；暂停新请求，保留整批供恢复后重试。
+		j.pending = append(buf, j.pending...)
+	}
+	j.mu.Unlock()
+	if err != nil && previous == nil {
+		slog.Error("usage journal write failed; new requests paused", "err", err)
+	} else if err == nil && previous != nil {
+		slog.Info("usage journal write recovered")
 	}
 	return err
 }

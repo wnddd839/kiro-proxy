@@ -196,6 +196,10 @@ func (s *Server) Handler() http.Handler {
 		p := strings.TrimRight(path.Clean("/"+r.URL.Path), "/")
 		switch {
 		case p == "/health":
+			if err := s.usage.Err(); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "usage journal unavailable"})
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "accounts": s.pool.Len()})
 		case p == "" || p == "/ui":
 			// 根路径：浏览器给页面，其余（探活脚本）给 health

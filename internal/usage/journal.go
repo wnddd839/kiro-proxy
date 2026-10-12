@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"math"
 	"slices"
 	"strings"
@@ -317,7 +318,7 @@ const (
 	defaultRecent    = 2000
 	defaultPageSize  = 50
 	maxPageSize      = 500
-	maxPending       = 32 << 20 // 写盘持续失败时待写缓冲的上限
+	maxPending       = 32 << 20 // 超过此待写量时暂停新请求；已接收记录仍保留
 )
 
 // dim 是 key 之下的聚合维度。
@@ -392,6 +393,8 @@ type Journal struct {
 	lifetime map[string]budgetTotals
 	recent   ring
 	pending  []byte // 待追加到文件的 JSONL
+	flushing int    // 正在写盘的字节数，计入接单判断
+	writeErr error
 
 	ioMu sync.Mutex // 串行化写盘，保证追加顺序
 
@@ -450,11 +453,24 @@ func (j *Journal) Record(e Entry) {
 
 	j.mu.Lock()
 	j.addLocked(e)
-	if line != nil && len(j.pending) < maxPending {
+	if line != nil {
 		j.pending = append(j.pending, line...)
 	}
 	j.mu.Unlock()
 
+}
+
+// Err 返回落盘故障或待写积压；调用方应暂停新请求，后台继续重试。
+func (j *Journal) Err() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.writeErr != nil {
+		return j.writeErr
+	}
+	if len(j.pending)+j.flushing >= maxPending {
+		return errors.New("usage journal write backlog is full")
+	}
+	return nil
 }
 
 func finite(f float64) float64 {
