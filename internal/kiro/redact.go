@@ -45,6 +45,9 @@ func SafeLogger(log *slog.Logger) *slog.Logger {
 	if log == nil {
 		log = slog.Default()
 	}
+	if _, ok := log.Handler().(safeHandler); ok {
+		return log
+	}
 	return slog.New(safeHandler{log.Handler()})
 }
 

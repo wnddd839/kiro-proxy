@@ -9,6 +9,22 @@ import (
 	"testing"
 )
 
+func TestSafeLoggerIsIdempotentAndPreservesKeyNames(t *testing.T) {
+	var b bytes.Buffer
+	log := SafeLogger(slog.New(slog.NewJSONHandler(&b, nil)))
+	if SafeLogger(log) != log {
+		t.Fatal("safe logger wrapped twice")
+	}
+	with := log.With("key_name", "member-alice").WithGroup("request")
+	if SafeLogger(with) != with {
+		t.Fatal("logger with attributes wrapped twice")
+	}
+	with.Info("generate", "key", "opaque-credential", "access_token", "opaque-token")
+	if !strings.Contains(b.String(), "member-alice") || strings.Contains(b.String(), "opaque-credential") || strings.Contains(b.String(), "opaque-token") {
+		t.Fatalf("key name missing or credential exposed: %s", b.String())
+	}
+}
+
 func TestSafeLoggerSanitizesAllBoundaries(t *testing.T) {
 	var b bytes.Buffer
 	log := SafeLogger(slog.New(slog.NewJSONHandler(&b, nil)))

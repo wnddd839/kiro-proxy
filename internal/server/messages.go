@@ -96,7 +96,7 @@ func (s *Server) generate(p proto) apiHandler {
 			if k != nil {
 				keyName = k.Name
 			}
-			s.log.Info("request refused", "key", keyName, "model", c.model, "err", err)
+			s.log.Info("request refused", "key_name", keyName, "model", c.model, "err", err)
 			p.writeError(w, status, err.Error())
 			return
 		}
@@ -669,7 +669,7 @@ func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool
 		gone()
 	}
 	s.log.Info("generate",
-		"proto", c.proto, "key", c.entry.KeyName, "account", id, "lease_pinned", lease.Pinned,
+		"proto", c.proto, "key_name", c.entry.KeyName, "account", id, "lease_pinned", lease.Pinned,
 		"thread", shortKey(c.thread), "conv", shortKey(convID), "model", c.model, "stream", c.req.Stream, "thinking", c.budget,
 		"input", u.Input, "output", u.Output, "cache_read", u.CacheRead, "cache_write", u.CacheWrite,
 		"credits", u.Credits, "ok", out.ok, "ms", time.Since(c.start).Milliseconds(), "first_ms", rec.FirstMS)
