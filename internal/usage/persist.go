@@ -175,8 +175,22 @@ func appendFile(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(data)
-	return errors.Join(err, f.Close())
+	info, err := f.Stat()
+	if err != nil {
+		return errors.Join(err, f.Close())
+	}
+	n, err := f.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		// 回到写入前的长度，否则整批重试会重复完整行或拼接半行。
+		return errors.Join(err, f.Truncate(info.Size()), f.Close())
+	}
+	if err := f.Close(); err != nil {
+		return errors.Join(err, os.Truncate(path, info.Size()))
+	}
+	return nil
 }
 
 // Close 停止后台并写完待写记录。可重复调用。
