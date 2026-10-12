@@ -354,7 +354,8 @@ func keysConfigured(path string) bool {
 		return false
 	}
 	var f struct {
-		Keys []struct {
+		RequireAuth bool `json:"require_auth"`
+		Keys        []struct {
 			Secret    string    `json:"secret"`
 			SHA256    string    `json:"secret_sha256"`
 			Disabled  bool      `json:"disabled"`
@@ -363,6 +364,9 @@ func keysConfigured(path string) bool {
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return false
+	}
+	if f.RequireAuth {
+		return true
 	}
 	now := time.Now()
 	for _, k := range f.Keys {

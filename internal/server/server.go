@@ -248,7 +248,7 @@ func (s *Server) guard(w http.ResponseWriter, r *http.Request, method string, p 
 }
 
 // client 识别下游：key 库里的 key 带预算；config.api_keys 是不记名的全权 key；
-// 两者都没配置时不校验。
+// key 库曾配置过凭据后保持鉴权，删空不会开放匿名访问。
 func (s *Server) client(r *http.Request) (*keys.Key, error) {
 	got := requestToken(r, "X-Api-Key")
 	if k, ok := s.keys.Lookup(got); ok {
@@ -265,7 +265,7 @@ func (s *Server) client(r *http.Request) (*keys.Key, error) {
 			return nil, nil
 		}
 	}
-	if len(s.cfg.APIKeys) == 0 && s.keys.Len() == 0 {
+	if len(s.cfg.APIKeys) == 0 && !s.keys.AuthRequired() {
 		return nil, nil
 	}
 	return nil, keys.ErrUnknown

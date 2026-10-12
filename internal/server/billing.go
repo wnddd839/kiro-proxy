@@ -94,7 +94,7 @@ func (s *Server) listKeys(w http.ResponseWriter, r *http.Request) {
 		v.LastUsed = last[k.ID]
 		out = append(out, v)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"keys": out, "open": len(out) == 0 && len(s.cfg.APIKeys) == 0})
+	writeJSON(w, http.StatusOK, map[string]any{"keys": out, "open": !s.keys.AuthRequired() && len(s.cfg.APIKeys) == 0})
 }
 
 // keyPatch 是新建 / 修改 key 的请求体。指针字段只在给出时生效。

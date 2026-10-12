@@ -205,9 +205,10 @@ type Store struct {
 	path string
 	now  func() time.Time
 
-	mu   sync.RWMutex
-	keys []*Key
-	rpm  map[string][]time.Time // id → 最近一分钟的请求时间
+	mu       sync.RWMutex
+	keys     []*Key
+	required bool                   // 一旦配置 key，删空后仍要求鉴权，并随 key 库落盘
+	rpm      map[string][]time.Time // id → 最近一分钟的请求时间
 }
 
 // Open 读取 path 处的 key 库；文件不存在时为空。path 为空时只在内存中。
@@ -227,16 +228,18 @@ func Open(path string, now func() time.Time) (*Store, error) {
 		return nil, err
 	}
 	var f struct {
-		Keys []*stored `json:"keys"`
+		Keys        []*stored `json:"keys"`
+		RequireAuth bool      `json:"require_auth"`
 	}
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	s.required = f.RequireAuth || len(f.Keys) > 0
 	seen := map[string]bool{}
 	migrated := false
-	for _, st := range f.Keys {
+	for i, st := range f.Keys {
 		if st == nil {
-			continue
+			return nil, fmt.Errorf("%s: key %d is null", path, i)
 		}
 		k := st.Key
 		k.Hash = strings.ToLower(st.Hash)
@@ -246,8 +249,12 @@ func Open(path string, now func() time.Time) (*Store, error) {
 			migrated = true
 		}
 		k.Secret = ""
-		if len(k.Hash) != sha256.Size*2 || seen[k.Hash] {
-			continue
+		decoded, err := hex.DecodeString(k.Hash)
+		if err != nil || len(decoded) != sha256.Size {
+			return nil, fmt.Errorf("%s: key %d has invalid secret_sha256", path, i)
+		}
+		if seen[k.Hash] {
+			return nil, fmt.Errorf("%s: key %d has duplicate credentials", path, i)
 		}
 		seen[k.Hash] = true
 		if k.ID == "" {
@@ -268,6 +275,13 @@ func (s *Store) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.keys)
+}
+
+// AuthRequired 不随最后一把 key 被删除而关闭。
+func (s *Store) AuthRequired() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.required
 }
 
 // Lookup 按 secret 找 key：比较 sha256（常数时间）。返回副本。
@@ -354,6 +368,7 @@ func (s *Store) Create(k Key) (Key, error) {
 	p := clone(&k)
 	p.Secret = "" // 库里只留哈希
 	s.keys = append(s.keys, &p)
+	s.required = true
 	s.mu.Unlock()
 	return k, s.save() // 明文只在这次返回
 }
@@ -453,8 +468,9 @@ func (s *Store) save() error {
 		out[i] = stored{Key: c, Hash: k.Hash}
 	}
 	raw, err := json.MarshalIndent(struct {
-		Keys []stored `json:"keys"`
-	}{out}, "", "  ")
+		Keys        []stored `json:"keys"`
+		RequireAuth bool     `json:"require_auth"`
+	}{out, s.required}, "", "  ")
 	s.mu.RUnlock()
 	if err != nil {
 		return err
