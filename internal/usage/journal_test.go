@@ -319,8 +319,8 @@ func TestRetentionPruneRewrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer j2.Close()
-	if n := strings.Count(readFile(t, path), "\n"); n != 1 {
-		t.Fatalf("lines after = %d", n)
+	if n := strings.Count(readFile(t, path), "\n"); n != 2 {
+		t.Fatalf("lines after (checkpoint + retained entry) = %d", n)
 	}
 	if s := j2.Spend("*", time.Time{}); s.Requests != 1 || s.CostUSD != 2 {
 		t.Fatalf("spend = %+v", s)

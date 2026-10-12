@@ -238,6 +238,9 @@ func (s *Server) admit(w http.ResponseWriter, c *call) (int, error) {
 	s.holds.mu.Lock()
 	defer s.holds.mu.Unlock()
 	t := s.usage.Spend(k.ID, start)
+	if k.PeriodOrDefault() == keys.PeriodTotal {
+		t = s.usage.LifetimeSpend(k.ID)
+	}
 	// 换号重试的失败尝试不扣预算：请求数与 CostUSD 已不含它们，credits 单独减掉
 	spent := keys.Spent{Requests: t.Requests, Credits: t.BillableCredits(), CostUSD: t.CostUSD}
 	r := s.holds.byKey[k.ID]

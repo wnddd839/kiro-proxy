@@ -360,6 +360,26 @@ func (r *ring) newest(i int) Entry {
 	return r.buf[(r.head+n-1-i)%n]
 }
 
+// budgetTotals 保存不会随明细保留期清理的累计预算支出。
+type budgetTotals struct {
+	Requests int64   `json:"requests"`
+	Credits  float64 `json:"credits"`
+	CostUSD  float64 `json:"cost_usd"`
+}
+
+func (b budgetTotals) add(e Entry) budgetTotals {
+	if !e.Retried {
+		b.Requests++
+		b.Credits += e.Credits
+		b.CostUSD += e.CostUSD
+	}
+	return b
+}
+
+type lifetimeRecord struct {
+	Lifetime map[string]budgetTotals `json:"lifetime"`
+}
+
 // Journal 是用量账本。并发安全。
 type Journal struct {
 	path      string
@@ -367,10 +387,11 @@ type Journal struct {
 	now       func() time.Time
 	loc       *time.Location
 
-	mu      sync.Mutex
-	keys    map[string]*keyIndex
-	recent  ring
-	pending []byte // 待追加到文件的 JSONL
+	mu       sync.Mutex
+	keys     map[string]*keyIndex
+	lifetime map[string]budgetTotals
+	recent   ring
+	pending  []byte // 待追加到文件的 JSONL
 
 	ioMu sync.Mutex // 串行化写盘，保证追加顺序
 
@@ -387,6 +408,7 @@ func newJournal(path string, opts Options) *Journal {
 		now:       opts.Now,
 		loc:       opts.Location,
 		keys:      map[string]*keyIndex{},
+		lifetime:  map[string]budgetTotals{},
 		recent:    ring{n: opts.Recent},
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
@@ -443,6 +465,7 @@ func finite(f float64) float64 {
 }
 
 func (j *Journal) addLocked(e Entry) {
+	j.lifetime[e.Key] = j.lifetime[e.Key].add(e)
 	ki := j.keys[e.Key]
 	if ki == nil {
 		ki = &keyIndex{buckets: map[dim]*Totals{}}
@@ -509,6 +532,14 @@ func (j *Journal) Spend(key string, since time.Time) Totals {
 		add(ki)
 	}
 	return t
+}
+
+// LifetimeSpend 是 key 的全部预算支出，不含换号重试，独立于明细保留期。
+func (j *Journal) LifetimeSpend(key string) Totals {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	b := j.lifetime[key]
+	return Totals{Requests: b.Requests, Credits: b.Credits, CostUSD: b.CostUSD}
 }
 
 // Query 汇总 [From, To) 内满足条件的用量，并分页返回最近明细。

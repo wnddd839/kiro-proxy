@@ -43,6 +43,7 @@ func (j *Journal) load() error {
 	defer f.Close()
 
 	cutoff := j.now().Add(-j.retention)
+	archived := map[string]budgetTotals{}
 	var (
 		kept     bytes.Buffer
 		size     int64
@@ -66,7 +67,7 @@ func (j *Journal) load() error {
 		if len(line) > 0 {
 			size += int64(len(line))
 			lastByte = line[len(line)-1]
-			if j.replay(line, cutoff) {
+			if j.replay(line, cutoff, archived) {
 				kept.Write(bytes.TrimRight(line, "\r\n"))
 				kept.WriteByte('\n')
 			} else if len(bytes.TrimSpace(line)) > 0 {
@@ -84,23 +85,49 @@ func (j *Journal) load() error {
 
 	// 末行缺换行（写到一半崩溃）也重写，否则后续追加会拼到同一行
 	if dropped || lastByte != '\n' || size > 2*int64(kept.Len()) {
-		return writeFileAtomic(j.path, kept.Bytes())
+		var rewritten bytes.Buffer
+		if len(archived) > 0 {
+			b, err := json.Marshal(lifetimeRecord{Lifetime: archived})
+			if err != nil {
+				return err
+			}
+			rewritten.Write(b)
+			rewritten.WriteByte('\n')
+		}
+		rewritten.Write(kept.Bytes())
+		return writeFileAtomic(j.path, rewritten.Bytes())
 	}
 	return nil
 }
 
-// replay 解析一行并计入内存；损坏或过期返回 false。
-func (j *Journal) replay(line []byte, cutoff time.Time) bool {
+// replay 恢复累计预算，并只把保留期内的明细计入查询。
+func (j *Journal) replay(line []byte, cutoff time.Time, archived map[string]budgetTotals) bool {
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 || len(line) > maxLine {
 		return false
 	}
+	var saved lifetimeRecord
+	if json.Unmarshal(line, &saved) == nil && saved.Lifetime != nil {
+		for key, b := range saved.Lifetime {
+			prev := archived[key]
+			prev.Requests += b.Requests
+			prev.Credits += finite(b.Credits)
+			prev.CostUSD += finite(b.CostUSD)
+			archived[key], j.lifetime[key] = prev, prev
+		}
+		return false // 重写时只保留一条累计检查点
+	}
 	var e Entry
-	if json.Unmarshal(line, &e) != nil || e.Time.IsZero() || e.Time.Before(cutoff) {
+	if json.Unmarshal(line, &e) != nil || e.Time.IsZero() {
 		return false
 	}
 	e.Credits = finite(e.Credits)
 	e.CostUSD = finite(e.CostUSD)
+	if e.Time.Before(cutoff) {
+		j.lifetime[e.Key] = j.lifetime[e.Key].add(e)
+		archived[e.Key] = archived[e.Key].add(e)
+		return false
+	}
 	j.mu.Lock()
 	j.addLocked(e)
 	j.mu.Unlock()

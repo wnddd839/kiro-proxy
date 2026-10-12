@@ -72,6 +72,9 @@ type keyView struct {
 func (s *Server) keyView(k keys.Key, now time.Time) keyView {
 	start := k.PeriodStart(now, time.Local)
 	v := keyView{Key: k, PeriodStart: start, PeriodEnd: k.PeriodEnd(now, time.Local), Spent: s.usage.Spend(k.ID, start)}
+	if k.PeriodOrDefault() == keys.PeriodTotal {
+		v.Spent = s.usage.LifetimeSpend(k.ID)
+	}
 	if k.LimitUSD > 0 {
 		r := max(0, k.LimitUSD-v.Spent.CostUSD)
 		v.Remaining = &r
