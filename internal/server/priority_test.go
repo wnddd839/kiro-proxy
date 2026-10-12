@@ -180,7 +180,7 @@ func TestConcurrentUSDReservationsSettleAndRelease(t *testing.T) {
 	h := newHarness(t, 6, nil)
 	c := &call{model: "claude-sonnet-4.5", prompt: meter.Analyze(&anthropic.Request{System: anthropic.Content{{Type: "text", Text: bigSystem}}, Messages: []anthropic.Message{{Role: "user", Content: anthropic.Content{{Type: "text", Text: "hi"}}}}}, "", 0, meter.ModeAuto)}
 	c.req.MaxTokens = 100
-	reserve := h.s.estimate(c, usage.Totals{}).CostUSD
+	reserve := h.s.estimate(c).CostUSD
 	k, err := h.s.keys.Create(keys.Key{Name: "concurrent", LimitUSD: reserve*2 + 1e-9})
 	if err != nil {
 		t.Fatal(err)
@@ -295,14 +295,15 @@ func TestAdmissionIncludesCurrentReservation(t *testing.T) {
 	}
 }
 
-func TestReservationCoversExpensiveCacheAndLongTier(t *testing.T) {
+func TestReservationCoversRequestedCacheTTLAndContextTier(t *testing.T) {
 	h := newHarness(t, 1, nil)
 	h.s.pricer.Overrides = map[string]meter.Price{"claude-sonnet-4.5": {Input: 3, Output: 15, CacheWrite: 5, CacheWrite1h: 20, LongAbove: 4000, Long: &meter.Price{Input: 8, Output: 25, CacheWrite1h: 50}}}
-	c := &call{model: "claude-sonnet-4.5", prompt: &meter.Prompt{Tokens: 2000}}
+	prompt := meter.Analyze(&anthropic.Request{System: anthropic.Content{{Type: "text", Text: strings.Repeat(" a", 2000), CacheControl: &anthropic.CacheControl{Type: "ephemeral", TTL: "1h"}}}}, "", 0, meter.ModeExplicit)
+	c := &call{model: "claude-sonnet-4.5", prompt: prompt}
 	c.req.MaxTokens = 100
-	actual := turn.Usage{CacheWrite: 4000, CacheWrite1h: 4000, KiroInput: 4052, Output: 100}
-	reserve := h.s.estimate(c, usage.Totals{}).CostUSD
+	actual := turn.Usage{CacheWrite: prompt.Tokens, CacheWrite1h: prompt.Tokens, KiroInput: 4052, Output: 100}
+	reserve := h.s.estimate(c).CostUSD
 	if want := h.s.pricer.APICost(c.model, actual); reserve < want {
-		t.Fatalf("reservation %.8f < worst cache/long settlement %.8f", reserve, want)
+		t.Fatalf("reservation %.8f < requested cache/long settlement %.8f", reserve, want)
 	}
 }

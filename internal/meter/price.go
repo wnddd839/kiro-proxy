@@ -290,19 +290,23 @@ func (p *Pricer) APICost(model string, u turn.Usage) float64 {
 	return usd/1e6 + p.HiddenCost(model, u)
 }
 
-// ReserveCost covers any input cache split and either known context tier.
-// Prompt remains a caller-provided estimate; this is not an upstream token bound.
-func (p *Pricer) ReserveCost(model string, prompt, hidden, output int) float64 {
+// ReserveCost 只覆盖本请求可用的缓存价与当前上下文档位。
+func (p *Pricer) ReserveCost(model string, prompt *Prompt, hidden, output int) float64 {
 	pr, _ := p.PriceOf(model)
-	in, out, client := pr.Input, pr.Output, max(pr.Input, pr.CacheRead, pr.CacheWrite, pr.CacheWrite1h)
-	if pr.Long != nil {
-		l := pr.Long
-		in, out = max(in, l.Input), max(out, l.Output)
-		client = max(client, l.Input, l.CacheRead, l.CacheWrite, l.CacheWrite1h)
+	pr = pr.forPrompt(prompt.Tokens + hidden)
+	client := pr.Input
+	for _, m := range prompt.marks {
+		if prompt.cum[m.at] < prompt.minTokens() {
+			continue
+		}
+		client = max(client, pr.CacheRead, pr.CacheWrite)
+		if m.ttl == longTTL {
+			client = max(client, pr.CacheWrite1h)
+		}
 	}
-	cost := float64(prompt)*client + float64(output)*out
+	cost := float64(prompt.Tokens)*client + float64(output)*pr.Output
 	if p.HiddenBilling != "off" {
-		cost += float64(hidden) * in
+		cost += float64(hidden) * pr.Input
 	}
 	return cost / 1e6
 }

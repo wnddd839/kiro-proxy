@@ -248,7 +248,7 @@ func (s *Server) admit(w http.ResponseWriter, c *call) (int, error) {
 	spent.Credits += r.Credits
 	spent.CostUSD += r.CostUSD
 	err := k.Check(now, spent, time.Local)
-	reserve := s.estimate(c, t)
+	reserve := s.estimate(c)
 	if err == nil {
 		candidate := keys.Spent{Requests: spent.Requests + reserve.Requests, Credits: spent.Credits + reserve.Credits, CostUSD: spent.CostUSD + reserve.CostUSD}
 		// Check uses >= for already-spent amounts; a reservation exactly at the limit is allowed.
@@ -269,21 +269,18 @@ func (s *Server) admit(w http.ResponseWriter, c *call) (int, error) {
 // reserveOutput 是预留时对输出 token 的估计上限。
 const reserveOutput = 4096
 
-// estimate reserves all max_tokens and the highest cache/context rate for twice
-// the local prompt estimate, bounded below by historical average spending.
-func (s *Server) estimate(c *call, period usage.Totals) keys.Spent {
+// estimate 按本请求的计费口径、输入长度和 max_tokens 预留。
+// 输入是本地估计，不能当作上游用量的严格上界。
+func (s *Server) estimate(c *call) keys.Spent {
 	out := reserveOutput
 	if c.req.MaxTokens > 0 {
 		out = c.req.MaxTokens
 	}
-	u := turn.Usage{Input: c.prompt.Tokens * 2, KiroInput: s.cfg.HiddenTokensOf(c.model), Output: out}
+	u := turn.Usage{Input: c.prompt.Tokens, KiroInput: s.cfg.HiddenTokensOf(c.model), Output: out}
 	u.Credits = meter.EstimateCredits(meter.CreditRateOf(c.model, s.cfg.CreditRates), u, u.KiroInput)
-	if period.Requests > 0 {
-		u.Credits = max(u.Credits, period.BillableCredits()/float64(period.Requests))
-	}
-	cost := max(s.pricer.ReserveCost(c.model, u.Input, u.KiroInput, out), s.pricer.Cost(c.model, u))
-	if period.Requests > 0 {
-		cost = max(cost, period.CostUSD/float64(period.Requests))
+	cost := s.pricer.ReserveCost(c.model, c.prompt, u.KiroInput, out)
+	if s.pricer.Basis == meter.BasisCredits && s.pricer.CreditUSD > 0 {
+		cost = s.pricer.CreditsUSD(u.Credits)
 	}
 	return keys.Spent{Requests: 1, Credits: u.Credits, CostUSD: cost}
 }
