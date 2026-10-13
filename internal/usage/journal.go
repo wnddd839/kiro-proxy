@@ -321,7 +321,7 @@ const (
 	defaultRecent    = 2000
 	defaultPageSize  = 50
 	maxPageSize      = 500
-	maxPending       = 32 << 20 // 超过此待写量时暂停新请求；已接收记录仍保留
+	maxPending       = 32 << 20 // 超过此待写量时 Err 报积压（带预算的 key 暂停接单）；已接收记录仍保留
 )
 
 // dim 是 key 之下的聚合维度。
@@ -463,7 +463,7 @@ func (j *Journal) Record(e Entry) {
 
 }
 
-// Err 返回落盘故障或待写积压；调用方应暂停新请求，后台继续重试。
+// Err 返回落盘故障或待写积压；调用方应暂停需要完整支出的接单（带预算的 key），后台继续重试。
 func (j *Journal) Err() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()

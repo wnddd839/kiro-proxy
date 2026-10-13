@@ -158,12 +158,12 @@ func (j *Journal) Flush() error {
 	j.flushing = 0
 	j.writeErr = err
 	if err != nil {
-		// 已接收记录不得丢弃；暂停新请求，保留整批供恢复后重试。
+		// 已接收记录不得丢弃；保留整批供恢复后重试（带预算的 key 由调用方暂停接单）。
 		j.pending = append(buf, j.pending...)
 	}
 	j.mu.Unlock()
 	if err != nil && previous == nil {
-		slog.Error("usage journal write failed; new requests paused", "err", err)
+		slog.Error("usage journal write failed; budgeted keys paused, records kept for retry", "err", err)
 	} else if err == nil && previous != nil {
 		slog.Info("usage journal write recovered")
 	}

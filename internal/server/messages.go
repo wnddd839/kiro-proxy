@@ -231,12 +231,14 @@ func (s *Server) cacheMode(p proto) string {
 // 已用量含同一 key 上在途请求的预留；通过后为本请求预留一份估计额度，记账时释放。
 // 并行的 subagent 同时发请求时不会全部通过后一起超支。
 func (s *Server) admit(w http.ResponseWriter, c *call) (int, error) {
-	if err := s.usage.Err(); err != nil {
-		return http.StatusServiceUnavailable, fmt.Errorf("usage journal unavailable: %w", err)
-	}
 	k := c.key
 	if k == nil {
+		// 匿名 / config.api_keys 不受预算约束：账本故障不拦生成，记录留在内存里等恢复后写盘
 		return 0, nil
+	}
+	// 带预算的 key 要看到全部已记支出：账本故障时暂停接单
+	if err := s.usage.Err(); err != nil {
+		return http.StatusServiceUnavailable, fmt.Errorf("usage journal unavailable: %w", err)
 	}
 	if !k.Allows(c.req.Model, c.model) {
 		return http.StatusForbidden, fmt.Errorf("%w: %s", keys.ErrModel, c.req.Model)
