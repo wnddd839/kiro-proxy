@@ -164,7 +164,7 @@ location /kiro/ {
 
 - `POST /v1/chat/completions`、`POST /v1/responses`（流式 / 非流式，含工具调用、reasoning），`usage` 里带 `cached_tokens` 与 `credits`
 - `POST /v1/messages`（流式 / 非流式）、`POST /v1/messages/count_tokens`（粗估）、`GET /v1/models`（拿不到模型列表时 503，不编造）
-- Kiro 不接收生成限制参数：`max_tokens`（未给则不在本地截断）与 `stop_sequences` / Chat `stop` 在本地限制下发并截断计费；`temperature` 首次出现时日志告警“已忽略”，之后记 debug。`tool_choice` 不转发，`top_p` 仍不支持
+- Kiro 不接收生成限制参数：`max_tokens` / `max_completion_tokens` / `max_output_tokens`（未给则不在本地截断）按本地计量限制下发输出，含 thinking 与工具包装，到限即取消上游并返回 `max_tokens`（OpenAI：`length` / incomplete）；`stop_sequences` / Chat `stop` 跨事件匹配，删去匹配串及其后内容并返回匹配到的 `stop_sequence`。丢弃的输出不计费，但拦不住上游已做的工作；`temperature` 首次出现时日志告警“已忽略”，之后记 debug。`tool_choice` 不转发，`top_p` 仍不支持
 - 路径前缀容错：`/messages`、`/v1/v1/messages`、`/anthropic/v1/messages`、尾 `/`、重复 `/` 都落到同一 handler
 - `GET/POST /admin/accounts`、`DELETE /admin/accounts/{id}`、`POST /admin/accounts/{id}/{enable|disable|refresh}`
 - `POST /admin/accounts/batch` `{"action":"test|limits|refresh|enable|disable|delete","ids":[]}`（ids 空 = 全部，delete 必须给 ids）
@@ -195,7 +195,7 @@ location /kiro/ {
 | `cost_basis` | `api` | 对下游收费口径：`api` = Claude API 官方价；`credits` = credits × `credit_usd` |
 | `credit_usd` | `0.02` | 一个 Kiro credit 的美元价，用于算上游成本与毛利 |
 | `prices` | 内置 | 覆盖价格表：模型 id 前缀 → `{"input","output","cache_write","cache_write_1h","cache_read"}`（USD/百万 token） |
-| `price_sync` | `24h` | 在线价格（仅 OpenRouter，过滤为 Kiro 模型）拉取间隔；`0` = 只用内置表 |
+| `price_sync` | `24h` | 在线价格（仅 OpenRouter，过滤为 Kiro 模型）拉取间隔；`0` = 只用内置表。挂牌缺缓存价时用内置缓存价，日志与模型表告警 |
 | `prices_file` | `prices.json` | 在线价格缓存；空 = 只在内存 |
 | `admin_token` | 空 | `/admin` 的 `X-Admin-Token`；空 = 只允许本机访问 `/admin` |
 | `session_ttl` | `24h` | 会话 → 号、→ conversationId 的空闲保留期；活跃会话续期，容量上限 4096 |
@@ -221,7 +221,7 @@ location /kiro/ {
 
 升级提示：配置省略 `cache_mode` 时，新默认值为 `auto`，会改变 Anthropic 请求的缓存拆分与对应费用；已有配置显式写了 `protocol`、`explicit` 或 `off` 的，继续按原配置运行。需要保留旧版按协议计量的行为，请设置 `"cache_mode": "protocol"`。
 
-1. **会话键**：header（`X-Session-Id` 等）→ `metadata.user_id` 里的 session → 稳定 system 前缀 + 首条 user 指纹。system 追加保留键；替换前缀轮换并记账，持久化仅存前缀长度及摘要。
+1. **会话键**：header（`X-Session-Id` 等）→ `metadata.user_id` 里的 session → 稳定 system 前缀 + 首条 user 指纹。system 追加保留键；替换前缀轮换并在账本记 `thread_key_change_reason`，持久化仅存前缀长度及摘要。
 2. **粘号**：同一会话回到同一号；账号忙时等待，超时返回重试提示，不借号。只有冷却 / 停用 / 失败等不可用时才换。会话默认空闲 24h 后过期，活跃使用续期。
 3. **稳定 conversationId**：按 会话 → 号 → conversationId 钉住；历史被回退 / 编辑 / 压缩时只轮换该号的。
 4. **前缀修复**：剥离 Claude Code 的 `x-anthropic-billing-header`（`cch` 每次变）、工具按名排序、schema / tool-use input 对象键规范化、可选 system 正则。历史图片全部保留；不转发的旧思考块不参与会话指纹。支持原生思考参数的模型不再向 prompt 注入预算标签；旧模型原子固定首次预算。
@@ -239,13 +239,13 @@ location /kiro/ {
 
 Kiro 的流里一般**不报 token**，只报上下文占用百分比和 credits。所以：
 
-- **input / output**：客户端输入与隐藏上下文分别计量。隐藏 token 缺省取内置实测值，未实测的模型按 Claude 的 4052；`hidden_tokens` 可按精确模型 id 覆盖，Opus 5.5 保持默认并标未校准。校准只缩放客户端输入三项，不缩放输出，不把舍入余数记为普通输入。隐藏上下文以独立 `hidden_tokens` / `hidden_tokens_charged_usd` 记录。它排在整段前缀最前面，故跟随客户端前缀的缓存状态计价：本轮有 cache_read 时按缓存读价，只有 cache_write 时按写入价（客户端声明 1h 时按 1h），都没有时按输入价；账本行的 `hidden_cache_read` / `hidden_cache_write` 记录归类。热会话不再每轮按普通输入重复收 4052 token。`off` 关闭其 API 价计费。上游 credits 无隐藏项拆分，credits 口径的独立隐藏美元归因为 0。
+- **input / output**：客户端输入与隐藏上下文分别计量。隐藏 token 缺省取内置实测值，未实测的模型按 Claude 的 4052；`hidden_tokens` 可按精确模型 id 覆盖，Opus 5.5 保持默认并标未校准，有号后用 `probe -window 1000000` 实测再改。校准只缩放客户端输入三项，各项分别向下取整，不缩放输出，不把舍入余数记为普通输入。隐藏上下文以独立 `hidden_tokens` / `hidden_tokens_charged_usd` 记录。它排在整段前缀最前面，故跟随客户端前缀的缓存状态计价：本轮有 cache_read 时按缓存读价，只有 cache_write 时按写入价（客户端声明 1h 时按 1h），都没有时按输入价；账本行的 `hidden_cache_read` / `hidden_cache_write` 记录归类。热会话不再每轮按普通输入重复收 4052 token。`off` 关闭其 API 价计费。上游 credits 无隐藏项拆分，credits 口径的独立隐藏美元归因为 0。
 - **输入字段语义**：Anthropic `input_tokens` 仅为客户端未缓存输入；客户端总输入 = `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`，不含隐藏 token。OpenAI `prompt_tokens` / Responses `input_tokens` 为含客户端缓存的总输入，但不含隐藏 token。`count_tokens` 也分离隐藏字段。管理台缓存命中率分母不含隐藏 token。
-- **cache_read / cache_creation**：默认 `cache_mode: "auto"`，三种协议都自动模拟 5 分钟滑动 TTL 的前缀缓存，忽略客户端 `cache_control`。这样 OpenAI → sub2api → Anthropic 的链路即使没有缓存断点，也能返回缓存读写估算。设为 `protocol` 时，Anthropic Messages 才按客户端 `cache_control`（含顶层自动缓存）计量：每个断点往前回看 20 块，最多 4 个断点，支持 1h TTL；OpenAI 仍走自动缓存。最小可缓存长度按官方分模型表（512 / 1024 / 2048 / 4096）。这些拆分是本地模拟，不证明上游实际命中；上游报告输入侧 `tokenUsage` 时，按 `reported_usage` 配置采用报告值。
+- **cache_read / cache_creation**：默认 `cache_mode: "auto"`，三种协议都自动模拟 5 分钟滑动 TTL 的前缀缓存，忽略客户端 `cache_control`。这样 OpenAI → sub2api → Anthropic 的链路即使没有缓存断点，也能返回缓存读写估算。设为 `protocol` 时，Anthropic Messages 才按客户端 `cache_control`（含顶层自动缓存）计量：每个断点往前回看 20 块，最多 4 个断点，支持 1h TTL；OpenAI 仍走自动缓存。最小可缓存长度按官方分模型表（512 / 1024 / 2048 / 4096）。这些拆分是本地模拟，不证明上游实际命中；上游报告输入侧 `tokenUsage` 时，按 `reported_usage` 配置采用报告值。当前假定报告总量含隐藏上下文（兼容性假设，未实测）：按未命中 → 写入 → 读的顺序切出至多一份隐藏基线，各项不为负、总量不变，切出部分按来源类别计价；报告很小时隐藏值可能低于基线。
 - **两本账**：对下游收费（`cost_usd`，Claude API 官方价）与上游成本（`upstream_usd` = credits × `credit_usd`），管理台按 key / 号 / 模型 / 天显示毛利率与亏损。
 - **中断与重试**：客户端中断按已消耗量入账（`aborted`）；上游没报 credits 则按 token 估（`credits_estimated`）。换号重试的失败尝试单独一行（`retried`），不向下游收费。
 - **下游 usage**：标准字段报 token 与 credits；上游未报 credits 时返回本地估计，账本标记 `credits_estimated`，响应与账号统计使用同一结算值。扩展 `hidden_tokens_charged_usd` 单独报隐藏项美元归因。流式 `message_start.usage` 在最终输入未知时为零，`message_delta.usage` 为实际结算值（不能相加），同级 `settled_usage` 为兼容旧接入方保留同一值。基线计费调整只作用于升级后的请求，不重算历史账本。
-- key 预算按各自周期（day / week / month / total，本地时区）累计，超限返回 402 + `x-should-retry: false`。准入原子检查已用 + 在途预留 + 本请求预留；完成时实际结算并释放。预留按本请求的计费口径、输入估计、完整 max_tokens、适用缓存 TTL 与上下文档位计算，不再叠加输入翻倍和历史平均费用。上游用量仍可能超过本地估计。`total` 的累计请求数、credits 和费用不受明细保留期影响；已被旧版本丢弃的历史无法恢复。
+- key 预算按各自周期（day / week / month / total，本地时区）累计，超限返回 402 + `x-should-retry: false`。准入原子检查已用 + 在途预留 + 本请求预留；完成时实际结算并释放。预留按本请求的计费口径、输入估计、完整 max_tokens（未给按 4096 估）、适用缓存 TTL 与上下文档位计算，不再叠加输入翻倍和历史平均费用。上游用量仍可能超过本地估计。`total` 的累计请求数、credits 和费用不受明细保留期影响；已被旧版本丢弃的历史无法恢复。
 - **账本故障**：写入失败或待写积压达到 32 MiB 时，带预算的 key 暂停新生成请求并返回 503；匿名与 `api_keys` 不受预算约束，照常服务。`/health` 返回 503 以暴露故障。已接收请求的记录继续保留在内存；后台重试成功后写盘并恢复接单。阈值用于接单控制，在途请求完成时缓冲可暂时超过阈值。
 
 ## 失败处理
@@ -277,7 +277,7 @@ Kiro 的流里一般**不报 token**，只报上下文占用百分比和 credits
 
 设置 `"debug_requests_dir": ".cache/upstream-requests"` 可保存每次脱敏上游请求与 `.meta.json` 比较结果。文件仍含脱敏后的对话与工具，属于敏感调试资料；凭证字段、profileArn 和图片字节被移除，不能保证任意自然语言秘密均被识别。默认关闭，并按配置大小上限、保留期定期清理。
 
-比较把 `history + current` 展开为消息序列，单独核对工具、账号、会话和模型参数；完整请求 JSON 会因为 current 移到 history 而改变外层结构，不能直接作为文件前缀判断。`messages_extend` 表示消息字节延续，`first_different_byte` 指向首个变化字节。system、工具或旧消息真正变化时如实报告，不冻结客户端内容。详见 [前缀审查与 Sonnet 5.5 实测](notes/prefix-stability.md)。
+比较把 `history + current` 展开为消息序列，单独核对工具、账号、会话和模型参数；完整请求 JSON 会因为 current 移到 history 而改变外层结构，不能直接作为文件前缀判断。`messages_extend` 表示消息字节延续，`first_different_byte` 指向首个变化字节，`first_different_block` 给出首个变化的消息块（序号、角色、类型、至多 80 个脱敏字符）。system、工具或旧消息真正变化时如实报告，不冻结客户端内容。详见 [前缀审查与 Sonnet 5.5 实测](notes/prefix-stability.md)。
 
 ## 探测 Kiro 的真实行为
 
@@ -337,83 +337,3 @@ CI 见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。
 ## License
 
 [BSD 3-Clause](LICENSE)
-# Token display and billing (2026-10-10)
-
-`hidden_tokens_billing` accepts `input` (default) or `off`. `hidden_tokens` is a
-model-id-to-integer configuration map; an absent model uses the builtin measured
-value (deepseek / minimax / glm / qwen), otherwise Claude's 4052. Do not treat
-this default as a measurement: Opus 5.5 remains **uncalibrated** until an account
-is available and the probe is run with `-window 1000000`.
-
-Client-visible Anthropic `input_tokens` excludes hidden context and cached input.
-OpenAI `prompt_tokens` / Responses `input_tokens` includes all three client-input
-categories but excludes hidden context. Every protocol exposes independent
-`hidden_tokens` and `hidden_tokens_charged_usd` extensions. The ledger stores the
-same independent fields. With API-price billing, `input` prices hidden context by
-the client prefix's cache state: cache-read price when the request reads the cache,
-cache-write price when it only writes (1h when the client declared 1h), input
-price otherwise; ledger rows record `hidden_cache_read` / `hidden_cache_write`.
-`off` does not charge it. With credits billing, upstream credits
-remain the total upstream charge and the separately attributed hidden USD is 0
-(Kiro does not report that attribution). Cache hit-rate denominators exclude
-hidden context. Existing historical ledger entries are not rewritten.
-
-Calibration scales only client input categories, never output or reasoning.
-Each input category rounds down independently, so a small residual may remain
-relative to upstream context; it is not charged as uncached input.
-
-When upstream reports input categories, the current accounting assumption is that
-their combined total includes hidden context. The proxy carves out at most the
-configured hidden baseline, in uncached-input, cache-write, then cache-read order,
-without negative categories or changing the combined total, and prices each carved
-part at the category it came from. A tiny report can
-therefore produce a hidden value below 4052. This is an explicit compatibility
-assumption, not a live measurement of Opus 5.5; a future probe must verify whether
-a model instead reports client-only input.
-
-Anthropic streaming `message_start.usage` is zero while the final input is
-unknown. `message_delta.usage` carries the actual settlement (cumulative; never
-add it to the start event), and the sibling `message_delta.settled_usage` repeats
-the same value for older integrations. Billing and the ledger use the same
-settlement.
-
-Online prices missing cache fields use the builtin cache rates, with a warning
-in logs and the model table. `unknown_model_pricing` is `highest` by default:
-unknown models are warned and priced at the component-wise highest known rate,
-including long-context tiers; `reject` refuses them before generation.
-
-Budget admission atomically includes outstanding holds **and this request's
-reservation**. The reservation follows the request's billing basis: the local
-prompt estimate plus hidden context at the highest applicable input/cache rate of
-the current context tier, and the full `max_tokens` (4096 when omitted). Actual
-settlement replaces the reservation under the admission lock.
-Credits and upstream input calibration are estimates, not provable upstream
-ceilings. Local output limits bound delivered output, but estimated reservations
-alone are not an absolute budget guarantee for unbounded upstream metering.
-
-## Local generation controls and stability
-
-`max_tokens` / `max_completion_tokens` / `max_output_tokens` limits delivered
-output using the local meter, including thinking and tool wrappers. An omitted
-limit applies no local cap. The proxy cancels upstream when the cap is reached and
-returns `max_tokens` (OpenAI: `length` / incomplete). Anthropic `stop_sequences`
-and Chat `stop` match across stream events, remove the matched sequence and all
-following text, and return `stop_sequence` with the matched string. Discarded
-output is not billed; local limits cannot prevent upstream work already done.
-Temperature is not forwarded; the first occurrence is logged as a warning, later ones at debug.
-
-`upstream_connect_timeout`, `upstream_first_byte_timeout`, and
-`upstream_idle_timeout` default to `15s`, `3m`, and `120s`. The idle watchdog
-tracks received upstream bytes, not client pings. Failures release leases and
-reservations; delivered partial streams use interruption billing, while failed
-attempts discarded during failover remain free to the client.
-
-Native effort is pinned to the first request's settings for each thread/model.
-Appending to the system keeps its original thread key; replacing the prefix
-rotates it and records `thread_key_change_reason`. Session expiry resets pins. Persisted stable system prefixes contain only length,
-SHA-256 digest and the original opaque thread key, not plaintext system content.
-Debug snapshots redact credential-like strings, named secret fields, profile
-identifiers and image bytes. Prefix diagnostics show the first changed upstream
-message block (index, role, type and at most 80 redacted characters). These are
-diagnostic snapshots, not byte-for-byte captures or guaranteed arbitrary-text
-secret detection.
