@@ -540,9 +540,9 @@ func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool
 		return outcome{failure: &f}
 	}
 
-	// 输入侧按本地 prompt cache 模拟拆分；缓存跟号走，与上游一致
+	// 输入侧按本地 prompt cache 模拟拆分；缓存跟号走，与上游一致。隐藏上下文跟随前缀的命中 / 写入状态计价
 	split := s.cache.Peek(id, c.prompt)
-	input := turn.Usage{Input: split.Input, KiroInput: s.cfg.HiddenTokensOf(c.model), CacheRead: split.CacheRead, CacheWrite: split.CacheWrite, CacheWrite1h: split.CacheWrite1h}
+	input := turn.Usage{Input: split.Input, CacheRead: split.CacheRead, CacheWrite: split.CacheWrite, CacheWrite1h: split.CacheWrite1h}.WithHidden(s.cfg.HiddenTokensOf(c.model))
 	po := pumpOpts{mode: s.cfg.ReportedUsageMode(), maxTokens: c.req.MaxTokens, stops: c.req.StopSequences, abort: func() { cancel(); res.Body.Close() }}
 	if err == nil && first.Kind == kiro.EvError {
 		// 首条内容前也可能已报 credits / tokenUsage，只按已报用量记成本。
@@ -739,6 +739,7 @@ func (s *Server) fillUsage(e *usage.Entry, u turn.Usage) {
 	e.Output, e.Reasoning = u.Output, u.Reasoning
 	e.Credits, e.CostUSD = u.Credits, u.CostUSD
 	e.HiddenTokens, e.HiddenChargedUSD = u.KiroInput, u.HiddenChargedUSD
+	e.HiddenCacheRead, e.HiddenCacheWrite = u.KiroCacheRead, u.KiroCacheWrite
 	e.UpstreamUSD = s.pricer.CreditsUSD(u.Credits)
 }
 

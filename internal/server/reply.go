@@ -83,19 +83,21 @@ func reportedUsage(u turn.Usage, k kiro.Usage, po pumpOpts) turn.Usage {
 		in, read, write := k.Input, k.CacheRead, k.CacheWrite
 		hidden := min(max(u.KiroInput, 0), in+read+write)
 		rem := hidden
+		cutWrite, cutRead := 0, 0
 		if cut := min(rem, in); cut > 0 {
 			in, rem = in-cut, rem-cut
 		}
 		if cut := min(rem, write); cut > 0 {
-			write, rem = write-cut, rem-cut
+			write, rem, cutWrite = write-cut, rem-cut, cut
 		}
 		if cut := min(rem, read); cut > 0 {
-			read -= cut
+			read, cutRead = read-cut, cut
 		}
 		// 上游不分 TTL：1h 按本地拆分的占比搬到切分后的 cacheWrite 上。
 		u.CacheWrite1h = meter.Scale1h(u.CacheWrite1h, u.CacheWrite, write)
 		u.Input, u.CacheRead, u.CacheWrite = in, read, write
-		u.KiroInput = hidden
+		// 隐藏部分按它被切出的类别计价，客户端与隐藏的费用合计等于上游报告按类计价。
+		u.KiroInput, u.KiroCacheRead, u.KiroCacheWrite = hidden, cutRead, cutWrite
 	}
 	if k.OutputReported && po.mode != kiro.ReportedIgnore {
 		u.Output = max(k.Output, u.Reasoning)

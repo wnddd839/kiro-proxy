@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,7 +38,8 @@ func TestHiddenTokensAreSeparateOnWireAndInJournal(t *testing.T) {
 	b, _ := json.Marshal(v.Entries[0])
 	var e map[string]any
 	_ = json.Unmarshal(b, &e)
-	if e["hidden_tokens"] != float64(4052) || e["hidden_tokens_charged_usd"] != 4052*3.0/1e6 {
+	// 首轮冷请求：隐藏上下文随客户端前缀一起写入缓存，按 5m 写入价（sonnet 4.5 为 $3.75/M）
+	if e["hidden_tokens"] != float64(4052) || e["hidden_cache_write"] != float64(4052) || e["hidden_tokens_charged_usd"] != 4052*3.75/1e6 {
 		t.Fatalf("missing independent hidden accounting: %s", b)
 	}
 }
@@ -52,6 +54,8 @@ func TestEightRoundUsageScenarios(t *testing.T) {
 			})
 			var messages []anthropic.Message
 			previous := 0
+			pr, _ := h.s.pricer.PriceOf("claude-sonnet-4.5")
+			sessionHidden := 0.0
 			for round := 1; round <= 8; round++ {
 				target := 1700 + (round-1)*10800/7
 				// Binary-search real local tokens; the simulator still sees real growing message history.
@@ -81,9 +85,21 @@ func TestEightRoundUsageScenarios(t *testing.T) {
 				body, _ := json.Marshal(req)
 				u := decodeUsage(t, h.post(t, "/v1/messages", string(body), map[string]string{"X-Session-Id": "eight-rounds"}))
 				e := waitRequests(t, h, usage.Query{}, int64(round)).Entries[0]
-				if u.Input+u.CacheRead+u.CacheWrite != prompt || u.Output != output || e.HiddenTokens != 4052 || u.Input == 4052 || e.HiddenChargedUSD != 0.012156 {
+				if u.Input+u.CacheRead+u.CacheWrite != prompt || u.Output != output || e.HiddenTokens != 4052 || u.Input == 4052 {
 					t.Fatalf("round %d: usage=%+v journal=%+v prompt=%d", round, u, e, prompt)
 				}
+				// 隐藏上下文跟随前缀缓存：命中轮按读价，写入轮按写价，关闭模拟时按输入价
+				wantPrice := pr.Input
+				switch {
+				case scenario == "hit" && round > 1:
+					wantPrice = pr.CacheRead
+				case scenario != "miss":
+					wantPrice = pr.CacheWrite
+				}
+				if want := 4052 * wantPrice / 1e6; math.Abs(e.HiddenChargedUSD-want) > 1e-12 {
+					t.Fatalf("round %d: hidden charged %v, want %v (4052 at %v/M)", round, e.HiddenChargedUSD, want, wantPrice)
+				}
+				sessionHidden += e.HiddenChargedUSD
 				if scenario == "hit" && round > 1 && (u.CacheRead != previous || u.CacheWrite <= 0) {
 					t.Fatalf("prefix not reused: %+v previous=%d", u, previous)
 				}
@@ -98,6 +114,11 @@ func TestEightRoundUsageScenarios(t *testing.T) {
 				previous = prompt
 				messages = append(req.Messages, anthropic.Message{Role: "assistant", Content: anthropic.Content{{Type: "text", Text: answer}}})
 			}
+			// 热会话 8 轮隐藏费用 = 1 次写入 + 7 次读，远低于旧口径的 8 次普通输入
+			if old := 8 * 4052 * pr.Input / 1e6; scenario == "hit" && sessionHidden > old/3 {
+				t.Fatalf("warm session hidden %.6f not discounted vs %.6f", sessionHidden, old)
+			}
+			t.Logf("%s: 8-round hidden USD %.6f (flat input price would be %.6f)", scenario, sessionHidden, 8*4052*pr.Input/1e6)
 		})
 	}
 }
@@ -144,7 +165,7 @@ func TestUnknownModelPricingPolicyHTTP(t *testing.T) {
 			io.Copy(io.Discard, res.Body)
 			e := waitRequests(t, h, usage.Query{}, 1).Entries[0]
 			pr, known := h.s.pricer.PriceOf(e.Model)
-			if known || pr.Warning == "" || pr.Input < 15 || pr.Output < 75 || e.HiddenChargedUSD != float64(4052)*pr.Input/1e6 {
+			if known || pr.Warning == "" || pr.Input < 15 || pr.Output < 75 || e.HiddenChargedUSD != float64(4052)*pr.CacheWrite/1e6 {
 				t.Fatalf("unknown model underpriced or unwarned: price=%+v entry=%+v", pr, e)
 			}
 		})

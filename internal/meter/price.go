@@ -306,18 +306,27 @@ func (p *Pricer) ReserveCost(model string, prompt *Prompt, hidden, output int) f
 	}
 	cost := float64(prompt.Tokens)*client + float64(output)*pr.Output
 	if p.HiddenBilling != "off" {
-		cost += float64(hidden) * pr.Input
+		// 隐藏上下文与客户端前缀同进同出缓存，按同一档最高单价预留
+		cost += float64(hidden) * client
 	}
 	return cost / 1e6
 }
 
+// HiddenCost 是隐藏上下文的 API 价：按 KiroCacheRead / KiroCacheWrite 分别计读、写价，其余按输入价。
+// 写入排在前缀最前：客户端有 1h 写入时它落在 1h 段里。
 func (p *Pricer) HiddenCost(model string, u turn.Usage) float64 {
-	if p.HiddenBilling == "off" {
+	if p.HiddenBilling == "off" || u.KiroInput <= 0 {
 		return 0
 	}
 	pr, _ := p.PriceOf(model)
 	pr = pr.forPrompt(u.PromptTokens() + u.KiroInput)
-	return float64(u.KiroInput) * pr.Input / 1e6
+	read := min(max(u.KiroCacheRead, 0), u.KiroInput)
+	write := min(max(u.KiroCacheWrite, 0), u.KiroInput-read)
+	writePrice := pr.CacheWrite
+	if u.CacheWrite1h > 0 {
+		writePrice = pr.CacheWrite1h
+	}
+	return (float64(u.KiroInput-read-write)*pr.Input + float64(read)*pr.CacheRead + float64(write)*writePrice) / 1e6
 }
 
 // Cost 是对下游报的费用：按 Basis 取 API 等价或 credits 折算。

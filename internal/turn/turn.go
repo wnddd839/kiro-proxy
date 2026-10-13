@@ -21,8 +21,12 @@ type Usage struct {
 	CacheRead  int // 命中缓存的前缀
 	CacheWrite int // 本次写入缓存的输入
 	// KiroInput 是独立的隐藏上下文，不属于 PromptTokens。
-	// 上游报告输入用量时清零，直接按报告的冷 / 热拆分估算。
-	KiroInput        int
+	// 上游报告输入用量时从报告的输入里切出，见 server.reportedUsage。
+	KiroInput int
+	// KiroCacheRead / KiroCacheWrite 是 KiroInput 中按缓存读 / 写计价的部分，其余按普通输入。
+	// 隐藏上下文排在整段前缀的最前面：客户端前缀命中时它也在缓存里。
+	KiroCacheRead    int
+	KiroCacheWrite   int
 	HiddenChargedUSD float64
 	StopSequence     string
 	Limited          bool
@@ -38,6 +42,19 @@ type Usage struct {
 
 // PromptTokens 是全部输入 token。
 func (u Usage) PromptTokens() int { return u.Input + u.CacheRead + u.CacheWrite }
+
+// WithHidden 记上隐藏上下文，并按客户端前缀的缓存状态归类：前缀有命中时隐藏部分也命中；
+// 只有写入时随首个断点一起写入；都没有（未开缓存或不够可缓存长度）时按普通输入。
+func (u Usage) WithHidden(n int) Usage {
+	u.KiroInput, u.KiroCacheRead, u.KiroCacheWrite = n, 0, 0
+	switch {
+	case u.CacheRead > 0:
+		u.KiroCacheRead = n
+	case u.CacheWrite > 0:
+		u.KiroCacheWrite = n
+	}
+	return u
+}
 
 // CacheWrite5m 是按 5 分钟 TTL 写入的部分。
 func (u Usage) CacheWrite5m() int { return u.CacheWrite - min(max(u.CacheWrite1h, 0), u.CacheWrite) }

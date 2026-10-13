@@ -164,7 +164,10 @@ func TestKiroInputBilledDownstream(t *testing.T) {
 					}
 					entries := waitRequests(t, h, usage.Query{}, 2).Entries
 					for _, e := range entries {
-						if e.Input != 0 || e.HiddenTokens != hidden || e.CostUSD != h.s.pricer.Cost(model, turn.Usage{Input: e.Input, KiroInput: e.HiddenTokens, CacheRead: e.CacheRead, CacheWrite: e.CacheWrite, Output: e.Output}) {
+						// 隐藏上下文随前缀缓存：冷轮跟着写入、热轮跟着命中，不再每轮按普通输入计
+						split := turn.Usage{Input: e.Input, CacheRead: e.CacheRead, CacheWrite: e.CacheWrite, Output: e.Output}.WithHidden(hidden)
+						if e.Input != 0 || e.HiddenTokens != hidden || e.HiddenCacheRead != split.KiroCacheRead || e.HiddenCacheWrite != split.KiroCacheWrite ||
+							e.CostUSD != h.s.pricer.Cost(model, split) {
 							t.Fatalf("hidden input missing from billing: %+v", e)
 						}
 						wantCredits := meter.EstimateCredits(meter.CreditRateOf(model, nil), turn.Usage{Input: e.Input, CacheRead: e.CacheRead, CacheWrite: e.CacheWrite, Output: e.Output}, hidden)

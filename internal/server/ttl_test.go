@@ -113,9 +113,9 @@ func TestAnthropic1hBilled(t *testing.T) {
 	if e.CacheWrite1h != u.CacheWrite || v.Totals.CacheWrite1h != int64(u.CacheWrite) {
 		t.Fatalf("journal 1h = %d / %d, want %d", e.CacheWrite1h, v.Totals.CacheWrite1h, u.CacheWrite)
 	}
-	// sonnet 4.5：输入 $3、输出 $15、1h 写入 $6 / M
-	want := (float64(u.Input+e.HiddenTokens)*3 + float64(u.Output)*15 + float64(u.CacheWrite)*6) / 1e6
-	if math.Abs(e.CostUSD-want) > 1e-9 {
+	// sonnet 4.5：输入 $3、输出 $15、1h 写入 $6 / M。隐藏上下文在前缀最前，随 1h 断点一起写入
+	want := (float64(u.Input)*3 + float64(u.Output)*15 + float64(u.CacheWrite+e.HiddenTokens)*6) / 1e6
+	if math.Abs(e.CostUSD-want) > 1e-9 || e.HiddenCacheWrite != e.HiddenTokens {
 		t.Fatalf("cost = %v, want %v (1h at 2x)", e.CostUSD, want)
 	}
 

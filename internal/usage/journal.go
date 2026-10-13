@@ -46,8 +46,11 @@ type Entry struct {
 	Input            int     `json:"input,omitzero"`
 	HiddenTokens     int     `json:"hidden_tokens"`
 	HiddenChargedUSD float64 `json:"hidden_tokens_charged_usd"`
-	CacheRead        int     `json:"cache_read,omitzero"`
-	CacheWrite       int     `json:"cache_write,omitzero"`
+	// HiddenCacheRead / HiddenCacheWrite 是 HiddenTokens 中按缓存读 / 写计价的部分，其余按普通输入
+	HiddenCacheRead  int `json:"hidden_cache_read,omitzero"`
+	HiddenCacheWrite int `json:"hidden_cache_write,omitzero"`
+	CacheRead        int `json:"cache_read,omitzero"`
+	CacheWrite       int `json:"cache_write,omitzero"`
 	// CacheWrite1h 是 CacheWrite 里按 1h TTL（2 倍价）计的部分
 	CacheWrite1h int     `json:"cache_write_1h,omitzero"`
 	Output       int     `json:"output,omitzero"`
