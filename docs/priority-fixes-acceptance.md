@@ -4,6 +4,8 @@
 > lifetime budgets, reservations, stream usage, journal fault handling and the
 > last-account policy. See [review-fixes.md](review-fixes.md) and README.md for
 > current behavior; the status table below describes the earlier snapshot.
+> The regression test files named below were later merged into feature-named
+> tests (`hidden_test.go`, `budget_test.go`, `debug_test.go`, `pool/state_test.go`, …).
 
 ## Scope and verification
 
