@@ -138,9 +138,7 @@ func (s *Server) prepare(r *http.Request, p proto, k *keys.Key) (*call, error) {
 	if c.req.MaxTokens < 0 {
 		return nil, errors.New("max_tokens must not be negative")
 	}
-	if c.req.MaxTokens == 0 {
-		c.req.MaxTokens = reserveOutput
-	}
+	// 没给上限（0）时不在本地截断：OpenAI 协议省略即不限；预算预留仍按 reserveOutput 估算。
 	for _, stop := range c.req.StopSequences {
 		if stop == "" {
 			return nil, errors.New("stop_sequences must not contain empty strings")

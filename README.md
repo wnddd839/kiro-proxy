@@ -164,7 +164,7 @@ location /kiro/ {
 
 - `POST /v1/chat/completions`、`POST /v1/responses`（流式 / 非流式，含工具调用、reasoning），`usage` 里带 `cached_tokens` 与 `credits`
 - `POST /v1/messages`（流式 / 非流式）、`POST /v1/messages/count_tokens`（粗估）、`GET /v1/models`（拿不到模型列表时 503，不编造）
-- Kiro 不接收生成限制参数：`max_tokens` 与 `stop_sequences` / Chat `stop` 在本地限制下发并截断计费；`temperature` 明确日志告警“已忽略”。`tool_choice` 不转发，`top_p` 仍不支持
+- Kiro 不接收生成限制参数：`max_tokens`（未给则不在本地截断）与 `stop_sequences` / Chat `stop` 在本地限制下发并截断计费；`temperature` 明确日志告警“已忽略”。`tool_choice` 不转发，`top_p` 仍不支持
 - 路径前缀容错：`/messages`、`/v1/v1/messages`、`/anthropic/v1/messages`、尾 `/`、重复 `/` 都落到同一 handler
 - `GET/POST /admin/accounts`、`DELETE /admin/accounts/{id}`、`POST /admin/accounts/{id}/{enable|disable|refresh}`
 - `POST /admin/accounts/batch` `{"action":"test|limits|refresh|enable|disable|delete","ids":[]}`（ids 空 = 全部，delete 必须给 ids）
@@ -371,15 +371,11 @@ therefore produce a hidden value below 4052. This is an explicit compatibility
 assumption, not a live measurement of Opus 5.5; a future probe must verify whether
 a model instead reports client-only input.
 
-Anthropic streaming `message_start.usage` contains a conservative **local
-estimate** (half the simulated client input, output 0), not a guaranteed lower
-bound of a later upstream report. `message_delta.usage` is cumulative, never
-additive, and its input/display fields do not decrease. The sibling
-`message_delta.settled_usage` contains the actual final settlement, which can be
-lower if the upstream overrides estimates. Billing and the ledger use actual
-settlement, not the monotonic display envelope. Clients doing token-based billing
-must read `settled_usage` rather than add start and delta usage; clients ignoring
-extensions still receive valid standard fields but may display an overestimate.
+Anthropic streaming `message_start.usage` is zero while the final input is
+unknown. `message_delta.usage` carries the actual settlement (cumulative; never
+add it to the start event), and the sibling `message_delta.settled_usage` repeats
+the same value for older integrations. Billing and the ledger use the same
+settlement.
 
 Online prices missing cache fields use the builtin cache rates, with a warning
 in logs and the model table. `unknown_model_pricing` is `highest` by default:
@@ -387,10 +383,10 @@ unknown models are warned and priced at the component-wise highest known rate,
 including long-context tiers; `reject` refuses them before generation.
 
 Budget admission atomically includes outstanding holds **and this request's
-reservation**. USD reserves twice the local prompt estimate at the highest applicable
-input/cache rate across normal and long-context tiers, plus hidden input and the
-full `max_tokens` (no 4096 cap), bounded below by historical average spend. Credits reserve the larger of token-based and historical average
-estimates. Actual settlement replaces the reservation under the admission lock.
+reservation**. The reservation follows the request's billing basis: the local
+prompt estimate plus hidden context at the highest applicable input/cache rate of
+the current context tier, and the full `max_tokens` (4096 when omitted). Actual
+settlement replaces the reservation under the admission lock.
 Credits and upstream input calibration are estimates, not provable upstream
 ceilings. Local output limits bound delivered output, but estimated reservations
 alone are not an absolute budget guarantee for unbounded upstream metering.
@@ -398,8 +394,8 @@ alone are not an absolute budget guarantee for unbounded upstream metering.
 ## Local generation controls and stability
 
 `max_tokens` / `max_completion_tokens` / `max_output_tokens` limits delivered
-output using the local meter, including thinking and tool wrappers. Omitted
-limits default to 4096. The proxy cancels upstream when the cap is reached and
+output using the local meter, including thinking and tool wrappers. An omitted
+limit applies no local cap. The proxy cancels upstream when the cap is reached and
 returns `max_tokens` (OpenAI: `length` / incomplete). Anthropic `stop_sequences`
 and Chat `stop` match across stream events, remove the matched sequence and all
 following text, and return `stop_sequence` with the matched string. Discarded

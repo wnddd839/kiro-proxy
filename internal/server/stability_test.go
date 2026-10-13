@@ -10,6 +10,7 @@ import (
 
 	"kiro-proxy/internal/config"
 	"kiro-proxy/internal/keys"
+	"kiro-proxy/internal/meter"
 	"kiro-proxy/internal/usage"
 )
 
@@ -65,6 +66,48 @@ func TestSystemAppendKeepsThread(t *testing.T) {
 	ids := h.up.convIDs()
 	if len(ids) != 2 || ids[0] != ids[1] {
 		t.Fatalf("system append changed thread: %v", ids)
+	}
+}
+
+// 客户端没给输出上限（Codex / Cursor 的 Chat、Responses 请求通常不带）时不得在本地截断长回复。
+func TestOmittedMaxTokensDoesNotTruncate(t *testing.T) {
+	var words []string
+	for i := range 6000 {
+		words = append(words, fmt.Sprintf("word%d", i))
+	}
+	answer := strings.Join(words, " ") + " TAILMARK"
+	if n := meter.Count(answer); n <= 2*4096 {
+		t.Fatalf("fixture too short: %d tokens", n)
+	}
+	bodies := map[string]string{
+		"/v1/messages":         `{"model":"claude-sonnet-4.5","stream":%v,"messages":[{"role":"user","content":"write a lot"}]}`,
+		"/v1/chat/completions": `{"model":"claude-sonnet-4.5","stream":%v,"messages":[{"role":"user","content":"write a lot"}]}`,
+		"/v1/responses":        `{"model":"claude-sonnet-4.5","stream":%v,"input":"write a lot"}`,
+	}
+	for path, body := range bodies {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", path, streaming), func(t *testing.T) {
+				h := newHarness(t, 1, nil)
+				h.up.stream = func(string) []byte {
+					var b []byte
+					for i := 0; i < len(answer); i += 400 {
+						b = append(b, frame("assistantResponseEvent", fmt.Sprintf(`{"content":%q}`, answer[i:min(i+400, len(answer))]))...)
+					}
+					return b
+				}
+				res := h.post(t, path, fmt.Sprintf(body, streaming), nil)
+				defer res.Body.Close()
+				raw, _ := io.ReadAll(res.Body)
+				if res.StatusCode != http.StatusOK || !strings.Contains(string(raw), "TAILMARK") {
+					t.Fatalf("long reply truncated without a client limit: status=%d tail=%q", res.StatusCode, raw[max(0, len(raw)-300):])
+				}
+				for _, cut := range []string{`"stop_reason":"max_tokens"`, `"finish_reason":"length"`, `"incomplete"`} {
+					if strings.Contains(string(raw), cut) {
+						t.Fatalf("reported as truncated (%s)", cut)
+					}
+				}
+			})
+		}
 	}
 }
 
