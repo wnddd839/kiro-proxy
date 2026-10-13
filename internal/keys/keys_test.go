@@ -186,3 +186,21 @@ func TestLegacyPlaintextMigrated(t *testing.T) {
 		t.Fatalf("file not rewritten: %s", raw)
 	}
 }
+
+// 损坏的凭据记录让 key 库加载失败，而不是被悄悄跳过（跳过会让鉴权意外放开）。
+func TestInvalidKeyFilesFailToLoad(t *testing.T) {
+	for _, raw := range []string{
+		`{"keys":[null]}`,
+		`{"keys":[{"secret_sha256":"broken"}]}`,
+		`{"keys":[{"secret_sha256":"` + strings.Repeat("z", 64) + `"}]}`,
+		`{"keys":[{"secret":"same"},{"secret":"same"}]}`,
+	} {
+		path := filepath.Join(t.TempDir(), "keys.json")
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(path, nil); err == nil {
+			t.Fatalf("invalid credentials silently accepted: %s", raw)
+		}
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"kiro-proxy/internal/config"
+	"kiro-proxy/internal/keys"
 	"kiro-proxy/internal/kiro"
 	"kiro-proxy/internal/pool"
 )
@@ -424,6 +425,30 @@ func TestQuotaFailureChecksOnlyThatAccount(t *testing.T) {
 	}
 }
 
+// 唯一的号被封：停用并保留记录（不当作暂时冷却），重启后也不再拿它请求上游。
+func TestOnlySuspendedAccountIsDisabledAndStaysDisabled(t *testing.T) {
+	h := newHarness(t, 1, nil)
+	h.up.reply = func(string) (int, string) { return 403, `{"message":"Your account is TemporarilySuspended"}` }
+	first := h.post(t, "/v1/messages", convo("hi"), nil)
+	io.Copy(io.Discard, first.Body)
+	if first.StatusCode != 403 {
+		t.Fatalf("upstream suspension status=%d", first.StatusCode)
+	}
+	if v, _ := h.pool.Get("a0"); !v.Disabled || !strings.Contains(v.Note, "Suspended") {
+		t.Fatalf("permanent failure shown as temporary cooling: %+v", v)
+	}
+	restored, err := pool.Open(h.poolPath, pool.Options{Client: h.pool.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.s.pool = restored
+	res := h.post(t, "/v1/messages", convo("hi"), nil)
+	io.Copy(io.Discard, res.Body)
+	if res.StatusCode != http.StatusServiceUnavailable || len(h.up.tokens()) != 1 {
+		t.Fatalf("disabled account retried after restart: status=%d calls=%v", res.StatusCode, h.up.tokens())
+	}
+}
+
 func TestFatalErrorNotRetried(t *testing.T) {
 	h := newHarness(t, 2, nil)
 	h.up.reply = func(string) (int, string) {
@@ -507,6 +532,63 @@ func TestAPIKeyRequired(t *testing.T) {
 	}
 	if res := h.post(t, "/v1/messages", fmt.Sprintf(turn1, "a"), map[string]string{"Authorization": "Bearer sk-local"}); res.StatusCode != 200 {
 		t.Fatalf("bearer: %d", res.StatusCode)
+	}
+}
+
+// key 库启用鉴权后，删掉最后一把 key 不会把号池开放给匿名（重启后也不会）；管理台不谎报“开放”。
+func TestDeleteLastKeyKeepsAuthentication(t *testing.T) {
+	h := newHarness(t, 1, nil)
+	path := filepath.Join(t.TempDir(), "keys.json")
+	st, err := keys.Open(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.s.keys = st
+	res := h.post(t, "/admin/keys", `{"name":"only member"}`, nil)
+	var k keys.Key
+	if err := json.NewDecoder(res.Body).Decode(&k); err != nil {
+		t.Fatal(err)
+	}
+	for _, restart := range []bool{false, true} {
+		if !restart {
+			req, _ := http.NewRequest(http.MethodDelete, h.srv.URL+"/admin/keys/"+k.ID, nil)
+			deleted, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deleted.Body.Close()
+			if deleted.StatusCode != http.StatusNoContent {
+				t.Fatalf("delete: %d", deleted.StatusCode)
+			}
+		} else if h.s.keys, err = keys.Open(path, nil); err != nil {
+			t.Fatal(err)
+		}
+		rejected := h.post(t, "/v1/messages", convo("hi"), nil)
+		rejected.Body.Close()
+		if rejected.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("restart=%v: anonymous status=%d", restart, rejected.StatusCode)
+		}
+		listing, err := http.Get(h.srv.URL + "/admin/keys")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var view struct{ Open bool }
+		if err := json.NewDecoder(listing.Body).Decode(&view); err != nil {
+			t.Fatal(err)
+		}
+		listing.Body.Close()
+		if view.Open {
+			t.Fatal("console claims authentication is open")
+		}
+	}
+	replacement := h.post(t, "/admin/keys", `{"name":"replacement"}`, nil)
+	if err := json.NewDecoder(replacement.Body).Decode(&k); err != nil {
+		t.Fatal(err)
+	}
+	accepted := h.post(t, "/v1/messages", convo("hi"), map[string]string{"x-api-key": k.Secret})
+	io.Copy(io.Discard, accepted.Body)
+	if accepted.StatusCode != http.StatusOK {
+		t.Fatalf("replacement status=%d", accepted.StatusCode)
 	}
 }
 
