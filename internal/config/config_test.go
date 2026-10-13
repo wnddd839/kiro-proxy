@@ -33,12 +33,21 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("overrides: cache %q hosted %q max_concurrent %d breaker %v", c.CacheMode, c.OpenAIHostedTools, c.MaxConcurrent, time.Duration(c.BreakerWindow))
 	}
 
-	for _, bad := range []string{`{"max_concurrent":-1}`, `{"breaker_window":"0s"}`} {
+	// 空白 api key 会让常数时间比较把“没带 key”判成通过；调试快照的上限与保留期不能为负。
+	for _, bad := range []string{`{"max_concurrent":-1}`, `{"breaker_window":"0s"}`,
+		`{"api_keys":[""]}`, `{"api_keys":["   "]}`, `{"api_keys":["ok","\t"]}`,
+		`{"debug_requests_max_bytes":-1}`, `{"debug_requests_retention":"-1s"}`} {
 		if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Load(path); err == nil {
 			t.Errorf("%s: want error", bad)
 		}
+	}
+	if err := os.WriteFile(path, []byte(`{"api_keys":["key-a","key-b"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("valid api_keys rejected: %v", err)
 	}
 }

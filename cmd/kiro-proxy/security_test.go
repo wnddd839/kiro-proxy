@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,154 +12,85 @@ import (
 	"kiro-proxy/internal/config"
 )
 
-func TestGuardListen(t *testing.T) {
-	cases := []struct {
-		name     string
-		listen   string
-		hasKeys  bool
-		allow    bool
-		wantErr  bool
-		wantWarn bool
-	}{
-		{"loopback no keys", "127.0.0.1:8787", false, false, false, false},
-		{"wildcard with keys", "0.0.0.0:8787", true, false, false, false},
-		{"wildcard no keys", "0.0.0.0:8787", false, false, true, false},
-		{"wildcard no keys overridden", "0.0.0.0:8787", false, true, false, true},
-		{"nonloopback no keys", "192.168.1.5:8787", false, false, true, false},
-		{"empty host no keys", ":8787", false, false, true, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			var buf strings.Builder
-			log := slog.New(slog.NewTextHandler(&buf, nil))
-			cfg := config.Default()
-			cfg.Listen = c.listen
-			err := guardListen(cfg, c.hasKeys, c.allow, log)
-			if (err != nil) != c.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
-			}
-			if got := strings.Contains(buf.String(), "SECURITY"); got != c.wantWarn {
-				t.Fatalf("warn = %q (contains SECURITY=%v), want %v", buf.String(), got, c.wantWarn)
-			}
-		})
-	}
-}
-
-func TestNewHTTPServerSetsReadTimeouts(t *testing.T) {
-	cfg := config.Default()
-	cfg.Listen = "127.0.0.1:8787"
-	srv := newHTTPServer(cfg, http.NotFoundHandler())
-	if srv.ReadHeaderTimeout <= 0 {
-		t.Fatalf("ReadHeaderTimeout not set: %v", srv.ReadHeaderTimeout)
-	}
-	if srv.ReadTimeout <= 0 {
-		t.Fatalf("ReadTimeout not set: %v", srv.ReadTimeout)
-	}
-	if srv.ReadTimeout < srv.ReadHeaderTimeout {
-		t.Fatalf("ReadTimeout %v should cover ReadHeaderTimeout %v", srv.ReadTimeout, srv.ReadHeaderTimeout)
-	}
-	// 显式空闲超时，避免 keep-alive 连接被 ReadTimeout 兜底断开。
-	if srv.IdleTimeout != 60*time.Second {
-		t.Fatalf("IdleTimeout = %v, want 60s", srv.IdleTimeout)
-	}
-	if srv.IdleTimeout <= srv.ReadTimeout {
-		t.Fatalf("IdleTimeout %v should exceed ReadTimeout %v so keep-alive reuse is not cut short", srv.IdleTimeout, srv.ReadTimeout)
-	}
-	if srv.Addr != cfg.Listen {
-		t.Fatalf("addr = %q, want %q", srv.Addr, cfg.Listen)
-	}
-}
-
-// 保证配置里的超时值被尊重。
-func TestHTTPServerReadTimeoutConfigurable(t *testing.T) {
-	cfg := config.Default()
-	cfg.ServerReadTimeout = config.Duration(90 * time.Second)
-	srv := newHTTPServer(cfg, http.NotFoundHandler())
-	if srv.ReadTimeout != 90*time.Second {
-		t.Fatalf("ReadTimeout = %v, want 90s", srv.ReadTimeout)
-	}
-	_ = io.Discard
-}
-
-func TestKeysConfiguredIsReadOnly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "keys.json")
-	// 旧版明文 key：keysConfigured 不能触发迁移改写。
-	legacy := `{"keys":[{"id":"k1","name":"legacy","secret":"plaintext-secret-value-1234"}]}`
-	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if !keysConfigured(path) {
-		t.Fatal("legacy keys file should count as configured")
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != legacy {
-		t.Fatalf("keysConfigured rewrote the key file: %s", after)
-	}
-	// 缺失 / 空库 -> false。
-	if keysConfigured(filepath.Join(t.TempDir(), "nope.json")) {
-		t.Fatal("missing file should not count as configured")
-	}
-	empty := filepath.Join(t.TempDir(), "empty.json")
-	if err := os.WriteFile(empty, []byte(`{"keys":[]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if keysConfigured(empty) {
-		t.Fatal("empty keys file should not count as configured")
-	}
-}
-
-func TestKeysConfiguredRequiresUsableCredential(t *testing.T) {
+// 启动守卫：监听可能被本机之外访问、又没有可用的下游 key 时拒绝启动；显式覆盖时放行并醒目告警。
+// key 由 api_keys（忽略空白）或 keys_file 里可用的记录提供；守卫只读 key 库，不触发明文迁移改写。
+func TestStartupGuardsExposedListener(t *testing.T) {
+	const missing = "\x00missing"
 	hash := strings.Repeat("ab", 32)
 	cases := []struct {
-		name string
-		json string
-		want bool
+		name   string
+		listen string
+		api    []string
+		file   string // keys_file 内容；空 = 不配置 keys_file；missing = 配了但文件不存在
+		allow  bool
+		want   string // ok | refuse | warn
 	}{
-		{"valid hash", `{"keys":[{"id":"k","secret_sha256":"` + hash + `"}]}`, true},
-		{"plaintext secret", `{"keys":[{"id":"k","secret":"s3cret-value"}]}`, true},
-		{"empty record", `{"keys":[{"id":"k"}]}`, false},
-		{"blank secret", `{"keys":[{"id":"k","secret":"","secret_sha256":""}]}`, false},
-		{"short hash", `{"keys":[{"id":"k","secret_sha256":"abcd"}]}`, false},
-		{"non-hex hash", `{"keys":[{"id":"k","secret_sha256":"` + strings.Repeat("zz", 32) + `"}]}`, false},
-		{"disabled", `{"keys":[{"id":"k","secret_sha256":"` + hash + `","disabled":true}]}`, false},
-		{"expired", `{"keys":[{"id":"k","secret_sha256":"` + hash + `","expires_at":"2000-01-01T00:00:00Z"}]}`, false},
+		{name: "loopback ipv4", listen: "127.0.0.1:8787", want: "ok"},
+		{name: "localhost", listen: "localhost:8787", want: "ok"},
+		{name: "localhost subdomain", listen: "app.localhost:8787", want: "ok"},
+		{name: "loopback ipv6", listen: "[::1]:8787", want: "ok"},
+		{name: "loopback without port", listen: "127.0.0.1", want: "ok"},
+		{name: "wildcard", listen: "0.0.0.0:8787", want: "refuse"},
+		{name: "empty host", listen: ":8787", want: "refuse"},
+		{name: "ipv6 wildcard", listen: "[::]:8787", want: "refuse"},
+		{name: "lan address", listen: "192.168.1.5:8787", want: "refuse"},
+		{name: "domain name", listen: "api.example.com:8787", want: "refuse"},
+		{name: "api key", listen: "0.0.0.0:8787", api: []string{"real-key"}, want: "ok"},
+		{name: "blank api keys", listen: "0.0.0.0:8787", api: []string{"", "   "}, want: "refuse"},
+		{name: "blank plus real api key", listen: "0.0.0.0:8787", api: []string{"", "real-key"}, want: "ok"},
+		{name: "keys file missing", listen: "0.0.0.0:8787", file: missing, want: "refuse"},
+		{name: "keys file empty", listen: "0.0.0.0:8787", file: `{"keys":[]}`, want: "refuse"},
+		{name: "keys file emptied but auth required", listen: "0.0.0.0:8787", file: `{"keys":[],"require_auth":true}`, want: "ok"},
+		{name: "hashed key", listen: "0.0.0.0:8787", file: `{"keys":[{"id":"k","secret_sha256":"` + hash + `"}]}`, want: "ok"},
+		{name: "legacy plaintext key", listen: "0.0.0.0:8787", file: `{"keys":[{"id":"k1","name":"legacy","secret":"plaintext-secret-value-1234"}]}`, want: "ok"},
+		{name: "only disabled key", listen: "0.0.0.0:8787", file: `{"keys":[{"id":"k","secret_sha256":"` + hash + `","disabled":true}]}`, want: "refuse"},
+		{name: "only expired key", listen: "0.0.0.0:8787", file: `{"keys":[{"id":"k","secret_sha256":"` + hash + `","expires_at":"2000-01-01T00:00:00Z"}]}`, want: "refuse"},
+		{name: "record without credential", listen: "0.0.0.0:8787", file: `{"keys":[{"id":"k","secret":"","secret_sha256":""}]}`, want: "refuse"},
+		{name: "short hash", listen: "0.0.0.0:8787", file: `{"keys":[{"id":"k","secret_sha256":"abcd"}]}`, want: "refuse"},
+		{name: "non-hex hash", listen: "0.0.0.0:8787", file: `{"keys":[{"id":"k","secret_sha256":"` + strings.Repeat("zz", 32) + `"}]}`, want: "refuse"},
+		{name: "explicit override", listen: "0.0.0.0:8787", allow: true, want: "warn"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p := filepath.Join(t.TempDir(), "keys.json")
-			if err := os.WriteFile(p, []byte(c.json), 0o600); err != nil {
-				t.Fatal(err)
+			cfg := config.Default()
+			cfg.Listen, cfg.APIKeys, cfg.KeysFile = c.listen, c.api, ""
+			if c.file != "" {
+				cfg.KeysFile = filepath.Join(t.TempDir(), "keys.json")
+				if c.file != missing {
+					if err := os.WriteFile(cfg.KeysFile, []byte(c.file), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
-			if got := keysConfigured(p); got != c.want {
-				t.Fatalf("keysConfigured = %v, want %v", got, c.want)
+			var logs strings.Builder
+			err := guardListen(cfg, hasDownstreamKeys(cfg), c.allow, slog.New(slog.NewTextHandler(&logs, nil)))
+			if (err != nil) != (c.want == "refuse") || strings.Contains(logs.String(), "SECURITY") != (c.want == "warn") {
+				t.Fatalf("want %s: err=%v logs=%q", c.want, err, logs.String())
+			}
+			if c.file != "" && c.file != missing {
+				if after, _ := os.ReadFile(cfg.KeysFile); string(after) != c.file {
+					t.Fatalf("startup guard rewrote the key file: %s", after)
+				}
 			}
 		})
 	}
 }
 
-func TestHasDownstreamKeysIgnoresBlank(t *testing.T) {
-	cases := []struct {
-		name string
-		keys []string
-		want bool
+// 下游读超时可配置，请求头超时不超过它；空闲超时显式 60s，免得复用的连接被读超时兜底掐断。
+func TestHTTPServerTimeouts(t *testing.T) {
+	for _, c := range []struct {
+		read               config.Duration
+		wantRead, wantHead time.Duration
 	}{
-		{"none", nil, false},
-		{"blank", []string{""}, false},
-		{"spaces", []string{"   "}, false},
-		{"blank plus real", []string{"", "real-key"}, true},
-		{"real", []string{"real-key"}, true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			cfg := config.Default()
-			cfg.APIKeys = c.keys
-			cfg.KeysFile = "" // 不落盘 key 库
-			if got := hasDownstreamKeys(cfg); got != c.want {
-				t.Fatalf("hasDownstreamKeys(%q) = %v, want %v", c.keys, got, c.want)
-			}
-		})
+		{0, 30 * time.Second, 10 * time.Second},
+		{config.Duration(90 * time.Second), 90 * time.Second, 10 * time.Second},
+		{config.Duration(5 * time.Second), 5 * time.Second, 5 * time.Second},
+	} {
+		cfg := config.Default()
+		cfg.ServerReadTimeout = c.read
+		srv := newHTTPServer(cfg, http.NotFoundHandler())
+		if srv.ReadTimeout != c.wantRead || srv.ReadHeaderTimeout != c.wantHead || srv.IdleTimeout != 60*time.Second || srv.Addr != cfg.Listen {
+			t.Errorf("read=%v: got read=%v header=%v idle=%v addr=%q", time.Duration(c.read), srv.ReadTimeout, srv.ReadHeaderTimeout, srv.IdleTimeout, srv.Addr)
+		}
 	}
 }
