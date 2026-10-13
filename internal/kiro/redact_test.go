@@ -9,56 +9,45 @@ import (
 	"testing"
 )
 
-func TestSafeLoggerIsIdempotentAndPreservesKeyNames(t *testing.T) {
+// SafeLogger 只包一层（With / WithGroup 后也是）；成员 key_name 保留，凭证类字段、Bearer、
+// 嵌在 error 里的完整请求正文、分组里的密钥都被脱敏。
+func TestSafeLogger(t *testing.T) {
 	var b bytes.Buffer
 	log := SafeLogger(slog.New(slog.NewJSONHandler(&b, nil)))
-	if SafeLogger(log) != log {
+	with := log.With("key_name", "member-alice", "access_token", "opaque-real-looking-secret").WithGroup("upstream")
+	if SafeLogger(log) != log || SafeLogger(with) != with {
 		t.Fatal("safe logger wrapped twice")
 	}
-	with := log.With("key_name", "member-alice").WithGroup("request")
-	if SafeLogger(with) != with {
-		t.Fatal("logger with attributes wrapped twice")
-	}
-	with.Info("generate", "key", "opaque-credential", "access_token", "opaque-token")
-	if !strings.Contains(b.String(), "member-alice") || strings.Contains(b.String(), "opaque-credential") || strings.Contains(b.String(), "opaque-token") {
-		t.Fatalf("key name missing or credential exposed: %s", b.String())
-	}
-}
-
-func TestSafeLoggerSanitizesAllBoundaries(t *testing.T) {
-	var b bytes.Buffer
-	log := SafeLogger(slog.New(slog.NewJSONHandler(&b, nil)))
-	log.With("access_token", "opaque-real-looking-secret").WithGroup("upstream").ErrorContext(context.Background(),
-		"failed Bearer abcdefghijk", "err", errors.New(`refused: {"conversationState":{"content":"private full request"}}`),
+	with.ErrorContext(context.Background(), "failed Bearer abcdefghijk",
+		"key", "opaque-credential",
+		"err", errors.New(`refused: {"conversationState":{"content":"private full request"}}`),
 		"details", slog.GroupValue(slog.String("refreshToken", "opaque-refresh-secret"), slog.String("note", "api_key=opaque-api-secret")))
-	for _, secret := range []string{"opaque-real-looking-secret", "abcdefghijk", "private full request", "opaque-refresh-secret", "opaque-api-secret"} {
-		if strings.Contains(b.String(), secret) {
-			t.Fatalf("log leaked %q: %s", secret, b.String())
+	out := b.String()
+	if !strings.Contains(out, "member-alice") || !strings.Contains(out, "REDACTED") {
+		t.Fatalf("key name or redaction marker missing: %s", out)
+	}
+	for _, secret := range []string{"opaque-real-looking-secret", "abcdefghijk", "opaque-credential", "private full request", "opaque-refresh-secret", "opaque-api-secret"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("log leaked %q: %s", secret, out)
 		}
 	}
-	if !strings.Contains(b.String(), "REDACTED") {
-		t.Fatal("missing redaction marker")
-	}
 }
 
-func TestErrorMessageDoesNotExposeUnstructuredBody(t *testing.T) {
+// 上游正文进错误消息或调试快照前脱敏：不回显非结构化正文与凭证，保留分类所需的文字与对话正文。
+func TestUpstreamBodiesAreRedacted(t *testing.T) {
 	for _, raw := range []string{`<html>private full request</html>`, `{"conversationState":{"content":"private full request"}}`} {
 		if got := errorMessage(503, []byte(raw)); strings.Contains(got, "private full request") {
 			t.Fatalf("body exposed: %s", got)
 		}
 	}
-	got := errorMessage(429, []byte(`{"message":"suspicious activity; Bearer abcdefghijk"}`))
-	if !strings.Contains(got, "suspicious activity") || strings.Contains(got, "abcdefghijk") {
+	if got := errorMessage(429, []byte(`{"message":"suspicious activity; Bearer abcdefghijk"}`)); !strings.Contains(got, "suspicious activity") || strings.Contains(got, "abcdefghijk") {
 		t.Fatalf("classification message lost or secret leaked: %s", got)
 	}
-}
-
-func TestRedactPayloadDropsInboundImageAndToken(t *testing.T) {
-	raw, err := RedactPayload([]byte(`{"source":{"type":"base64","data":"opaqueBase64ImageContent"},"token":"opaqueCredential","content":"safe text"}`))
+	payload, err := RedactPayload([]byte(`{"source":{"type":"base64","data":"opaqueBase64ImageContent"},"token":"opaqueCredential","content":"safe text"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "opaqueBase64ImageContent") || strings.Contains(string(raw), "opaqueCredential") || !strings.Contains(string(raw), "safe text") {
-		t.Fatalf("payload redaction failed: %s", raw)
+	if strings.Contains(string(payload), "opaqueBase64ImageContent") || strings.Contains(string(payload), "opaqueCredential") || !strings.Contains(string(payload), "safe text") {
+		t.Fatalf("payload redaction failed: %s", payload)
 	}
 }

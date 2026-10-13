@@ -113,6 +113,11 @@ func TestCalibrate(t *testing.T) {
 	if got := Calibrate(turn.Usage{}, 5000, 4000); got != (turn.Usage{}) {
 		t.Errorf("empty: %+v", got)
 	}
+	// 全是缓存的输入：校准只缩放缓存两项，不凭空造出未缓存输入，不动输出与 reasoning
+	cached := turn.Usage{CacheRead: 1001, CacheWrite: 999, Output: 123, Reasoning: 31}
+	if got := Calibrate(cached, 4052+1801+123, 4052); got.Input != 0 || got.Output != 123 || got.Reasoning != 31 || got.CacheRead >= cached.CacheRead {
+		t.Errorf("cached-only calibration: %+v", got)
+	}
 }
 
 var longSys = strings.Repeat("You are a careful assistant. ", 300) // 约 2.3k token
@@ -279,6 +284,25 @@ func TestPricer(t *testing.T) {
 	p.Overrides = map[string]Price{"claude-sonnet": {Input: 1, Output: 2}}
 	if pr, _ := p.PriceOf("claude-sonnet-4.5"); pr.Input != 1 || math.Abs(pr.CacheRead-0.1) > 1e-12 || pr.Source != "config" {
 		t.Fatalf("override = %+v", pr)
+	}
+
+	// 在线挂牌缺缓存价：用内置表（含长上下文档）的缓存价并告警，不按输入价推导多收
+	q := &Pricer{}
+	or, err := ParseOpenRouter([]byte(`{"data":[{"id":"anthropic/claude-sonnet-4.5","pricing":{"prompt":"0.000003","completion":"0.000015"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	or["gpt-5.6-sol"] = Price{Input: 8, Output: 40, CacheRead: 0.8, CacheWrite: 8, LongAbove: 272000, Long: &Price{Input: 20, Output: 100}}
+	q.SetOnline(or, time.Now())
+	if pr, _ := q.PriceOf("claude-sonnet-4.5"); pr.CacheRead != 0.3 || pr.CacheWrite != 3.75 || pr.CacheWrite1h != 6 || pr.Warning == "" {
+		t.Errorf("missing online cache prices: %+v", pr)
+	}
+	if pr, _ := q.PriceOf("gpt-5.6-sol"); pr.Long.CacheRead != 0.4 || pr.Long.CacheWrite != 5 || pr.Warning == "" {
+		t.Errorf("missing long-tier cache prices inferred: %+v long=%+v", pr, pr.Long)
+	}
+	// 未知模型按已知最高各项单价
+	if pr, ok := q.PriceOf("claude-opus-99"); ok || pr.Input < 15 || pr.Output < 75 {
+		t.Errorf("unknown model underpriced: %+v matched=%v", pr, ok)
 	}
 }
 
