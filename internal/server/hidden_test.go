@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"kiro-proxy/internal/anthropic"
 	"kiro-proxy/internal/config"
@@ -17,6 +18,28 @@ import (
 	"kiro-proxy/internal/turn"
 	"kiro-proxy/internal/usage"
 )
+
+// 隐藏 token 漂移监控：稳定基线不告警，持续偏离超过容差时告警，只保留最近一窗样本。
+func TestHiddenWatchAlertsOnDrift(t *testing.T) {
+	h := newHiddenWatch()
+	now := time.Unix(1_700_000_000, 0)
+	for i := range hiddenMinSample {
+		st, _ := h.observe("claude-sonnet-4.5", 4052+i-2, now)
+		if st.Alert {
+			t.Fatalf("alert on stable baseline: %+v", st)
+		}
+	}
+	var changed bool
+	var st hiddenStat
+	for range hiddenWindow {
+		var c bool
+		st, c = h.observe("claude-sonnet-4.5", 4300, now)
+		changed = changed || c
+	}
+	if !st.Alert || !changed || st.Drift != 248 {
+		t.Fatalf("drift not flagged: %+v changed=%v", st, changed)
+	}
+}
 
 // 8 轮持续增长的对话：隐藏上下文（4052）不进客户端 input，在线上与账本独立记录；
 // 跟随前缀缓存计价——命中轮按读价，写入轮按写价，关闭模拟时按输入价。
@@ -133,15 +156,26 @@ func TestHiddenOverrideAndBillingOff(t *testing.T) {
 			}
 		})
 	}
-	h := newHarness(t, 1, nil)
-	h.s.models.merge([]kiro.Model{{ID: "claude-opus-5.5"}, {ID: "deepseek-3.2"}})
+	h := newHarness(t, 1, func(c *config.Config) { c.HiddenTokens = map[string]int{"claude-sonnet-4.5": 4321} })
+	h.s.models.merge([]kiro.Model{{ID: "claude-sonnet-4.5"}, {ID: "claude-opus-5.5"}, {ID: "deepseek-3.2"}})
+	want := map[string]struct {
+		label  string
+		hidden int
+	}{
+		"claude-sonnet-4.5": {"配置覆盖（需实测依据）", 4321},
+		"claude-opus-5.5":   {"未校准", 4052},
+		"deepseek-3.2":      {"已校准", 3699},
+	}
 	for _, r := range h.s.modelRows() {
-		if r.ID == "claude-opus-5.5" && (r.HiddenCalibration != "未校准" || r.HiddenTokens != 4052) {
-			t.Fatalf("invented calibration: %+v", r)
+		if w, ok := want[r.ID]; ok {
+			if r.HiddenCalibration != w.label || r.HiddenTokens != w.hidden {
+				t.Errorf("%s: calibration %q hidden %d, want %q %d", r.ID, r.HiddenCalibration, r.HiddenTokens, w.label, w.hidden)
+			}
+			delete(want, r.ID)
 		}
-		if r.ID == "deepseek-3.2" && (r.HiddenCalibration != "已校准" || r.HiddenTokens != 3699) {
-			t.Fatalf("measured model not used: %+v", r)
-		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("models missing from the table: %v", want)
 	}
 }
 

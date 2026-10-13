@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -46,7 +47,7 @@ func TestDebugSnapshotsRedactedAndBounded(t *testing.T) {
 
 	t.Run("redacted", func(t *testing.T) {
 		const secret = "sk-live-ABCDEF0123456789"
-		dir := t.TempDir()
+		dir := filepath.Join(t.TempDir(), "not-created-yet") // 新配的调试目录尚不存在：启动清理不报错，首次写入时创建
 		h := newHarness(t, 1, func(c *config.Config) { c.DebugRequestsDir = dir })
 		h.up.stream = ok
 		body := fmt.Sprintf(`{"model":"claude-sonnet-4.5","system":"system with %s","messages":[{"role":"user","content":[{"type":"text","text":"hi %s"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"SECRETIMAGEPIXELS"}}]}]}`, secret, secret)
@@ -117,8 +118,25 @@ func TestDebugSnapshotsRedactedAndBounded(t *testing.T) {
 		decodeUsage(t, h.post(t, "/v1/messages", big, map[string]string{"X-Session-Id": "over-cap"}))
 		waitRequests(t, h, usage.Query{}, 7)
 		after := debugFiles(t, dir)
-		if !slices.Equal(slices.Sorted(maps.Keys(before)), slices.Sorted(maps.Keys(after))) {
+		if !maps.Equal(before, after) {
 			t.Fatalf("over-cap snapshot written or displaced others: before=%v after=%v", slices.Sorted(maps.Keys(before)), slices.Sorted(maps.Keys(after)))
+		}
+	})
+
+	// 清理失败时余量未知：启动只告警，写前清理失败则跳过快照，不冒超限的风险
+	t.Run("cleanup failure skips the write", func(t *testing.T) {
+		orig := pruneDir
+		t.Cleanup(func() { pruneDir = orig }) // 先登记：harness 关停后才恢复
+		pruneDir = func(string, int64, time.Duration, time.Time) (int, error) {
+			return 0, errors.New("injected prune failure")
+		}
+		dir := t.TempDir()
+		h := newHarness(t, 1, func(c *config.Config) { c.DebugRequestsDir = dir })
+		h.up.stream = ok
+		decodeUsage(t, h.post(t, "/v1/messages", convo("hi"), nil))
+		waitRequests(t, h, usage.Query{}, 1)
+		if files := debugFiles(t, dir); len(files) != 0 {
+			t.Fatalf("snapshot written although cleanup failed: %v", slices.Sorted(maps.Keys(files)))
 		}
 	})
 }
