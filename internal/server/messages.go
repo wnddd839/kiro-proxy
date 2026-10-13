@@ -454,7 +454,7 @@ func (s *Server) attempt(ctx context.Context, w http.ResponseWriter, lease *pool
 		if err := s.traceRequest(c, id, payload); err != nil {
 			s.log.Warn("upstream request trace failed", "err", err)
 		}
-		timer := time.AfterFunc(durationOr(time.Duration(s.cfg.UpstreamFirstByteTimeout), 60*time.Second), cancel)
+		timer := time.AfterFunc(durationOr(time.Duration(s.cfg.UpstreamFirstByteTimeout), defaultFirstByteTimeout), cancel)
 		res, err := s.pool.Client().Generate(ctx, cred, payload)
 		if err == nil {
 			idle := durationOr(time.Duration(s.cfg.UpstreamIdleTimeout), 120*time.Second)

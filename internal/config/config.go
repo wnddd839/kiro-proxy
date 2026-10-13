@@ -157,7 +157,7 @@ func Default() Config {
 		PinThinking:              true,
 		MaxAttempts:              3,
 		UpstreamConnectTimeout:   Duration(15 * time.Second),
-		UpstreamFirstByteTimeout: Duration(60 * time.Second),
+		UpstreamFirstByteTimeout: Duration(3 * time.Minute),
 		UpstreamIdleTimeout:      Duration(120 * time.Second),
 		MaxConcurrent:            3,
 		LimitsInterval:           0, // 不定时轮询：只在号报额度用尽时查它一个

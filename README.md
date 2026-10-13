@@ -209,7 +209,7 @@ location /kiro/ {
 | `limits_interval` | `0s` | 额度定时轮询间隔，默认关闭：只在某号报额度用尽时查它一个 |
 | `breaker_window` | `2m` | 滑动请求结果窗口：同类失败率 >50% 且涉及至少 2 个号触发；成功不清空历史，只冷却不停号 |
 | `upstream_connect_timeout` | `15s` | 上游 TCP 连接及 TLS 握手超时 |
-| `upstream_first_byte_timeout` | `60s` | 上游响应头及首个事件等待超时 |
+| `upstream_first_byte_timeout` | `3m` | 上游响应头及首个字节等待超时；长上下文冷请求的首字可能超过一分钟，误杀会冷却号并重新 prefill |
 | `upstream_idle_timeout` | `120s` | 上游流连续无字节超时；不以客户端 ping 续期 |
 | `server_read_timeout` | `30s` | 下游请求读取超时；ReadHeaderTimeout 为 min(10s, 读超时)，IdleTimeout 固定 60s |
 | `log_level` | `info` | |
@@ -403,7 +403,7 @@ output is not billed; local limits cannot prevent upstream work already done.
 Temperature is not forwarded and is logged as ignored.
 
 `upstream_connect_timeout`, `upstream_first_byte_timeout`, and
-`upstream_idle_timeout` default to `15s`, `60s`, and `120s`. The idle watchdog
+`upstream_idle_timeout` default to `15s`, `3m`, and `120s`. The idle watchdog
 tracks received upstream bytes, not client pings. Failures release leases and
 reservations; delivered partial streams use interruption billing, while failed
 attempts discarded during failover remain free to the client.

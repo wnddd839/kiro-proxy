@@ -44,6 +44,10 @@ func durationOr(v time.Duration, fallback time.Duration) time.Duration {
 	return fallback
 }
 
+// defaultFirstByteTimeout 是上游响应头及首个字节的缺省等待。长上下文冷请求的首字可能超过一分钟
+// （实测 opus-5.5 约 24k 上下文已约 27s）；误杀会冷却号并让重试重新 prefill。
+const defaultFirstByteTimeout = 3 * time.Minute
+
 func (s *Server) configureTransport() {
 	h := *s.pool.Client().HTTP
 	tr, ok := h.Transport.(*http.Transport)
@@ -58,7 +62,7 @@ func (s *Server) configureTransport() {
 	d := durationOr(time.Duration(s.cfg.UpstreamConnectTimeout), 15*time.Second)
 	tr.DialContext = (&net.Dialer{Timeout: d, KeepAlive: 30 * time.Second}).DialContext
 	tr.TLSHandshakeTimeout = d
-	tr.ResponseHeaderTimeout = durationOr(time.Duration(s.cfg.UpstreamFirstByteTimeout), 60*time.Second)
+	tr.ResponseHeaderTimeout = durationOr(time.Duration(s.cfg.UpstreamFirstByteTimeout), defaultFirstByteTimeout)
 	h.Transport = tr
 	s.pool.Client().HTTP = &h
 }
