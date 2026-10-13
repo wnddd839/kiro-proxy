@@ -144,7 +144,7 @@ func TestKiroInputBilledDownstream(t *testing.T) {
 						}
 						return in, read, write
 					}
-					hidden := h.s.cfg.HiddenTokensOf(model)
+					hidden := kiro.HiddenTokens(model) // 实测表：deepseek-3.2 为 3699，不是 Claude 的 4052
 					coldIn, coldRead, coldWrite := read()
 					warmIn, warmRead, warmWrite := read()
 					if coldIn != 0 || coldRead != 0 || coldWrite == 0 || warmIn != 0 || warmRead != coldWrite || warmWrite != 0 {

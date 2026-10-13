@@ -291,12 +291,13 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// HiddenTokensOf returns the configured model baseline; unmeasured models stay at 4052.
+// HiddenTokensOf 是模型的隐藏上下文 token：配置覆盖 → 实测表（kiro.HiddenTokens）→ Claude 的 4052。
 func (c Config) HiddenTokensOf(model string) int {
-	if n, ok := c.HiddenTokens[meter.CanonModel(model)]; ok {
+	m := meter.CanonModel(model)
+	if n, ok := c.HiddenTokens[m]; ok {
 		return n
 	}
-	return 4052
+	return kiro.HiddenTokens(m)
 }
 
 // ReachesBeyondLoopback 报告 listen 是否可能接受非本机连接：空 host、wildcard（0.0.0.0 / ::）、

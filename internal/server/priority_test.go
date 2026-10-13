@@ -137,10 +137,13 @@ func TestHiddenBillingOffAndOverride(t *testing.T) {
 	if e.CostUSD != h.s.pricer.APICost(e.Model, turn.Usage{Input: e.Input, CacheRead: e.CacheRead, CacheWrite: e.CacheWrite, Output: e.Output, KiroInput: e.HiddenTokens}) {
 		t.Fatalf("off still billed: %+v", e)
 	}
-	h.s.models.merge([]kiro.Model{{ID: "claude-opus-5.5"}})
+	h.s.models.merge([]kiro.Model{{ID: "claude-opus-5.5"}, {ID: "deepseek-3.2"}})
 	for _, r := range h.s.modelRows() {
 		if r.ID == "claude-opus-5.5" && (r.HiddenCalibration != "未校准" || r.HiddenTokens != 4052) {
 			t.Fatalf("invented calibration: %+v", r)
+		}
+		if r.ID == "deepseek-3.2" && (r.HiddenCalibration != "已校准" || r.HiddenTokens != 3699) {
+			t.Fatalf("measured model not used: %+v", r)
 		}
 	}
 }

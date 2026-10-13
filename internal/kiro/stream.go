@@ -62,6 +62,19 @@ func HiddenTokens(model string) int {
 
 const hiddenClaude = 4052 // claude-sonnet-4.5 / claude-haiku-4.5 / claude-sonnet-4 / auto
 
+// HiddenMeasured 报告模型的隐藏 token 是否有实测值（否则 HiddenTokens 只是沿用 Claude 的值）。
+func HiddenMeasured(model string) bool {
+	m := strings.ToLower(model)
+	if _, ok := hiddenTokens[m]; ok {
+		return true
+	}
+	switch m {
+	case "claude-sonnet-4.5", "claude-haiku-4.5", "claude-sonnet-4", "auto":
+		return true
+	}
+	return false
+}
+
 var hiddenTokens = map[string]int{
 	"deepseek-3.2":     3699,
 	"minimax-m2.5":     3864,

@@ -188,7 +188,7 @@ location /kiro/ {
 | `credit_rates` | 内置拟合值 | 按 token 估 credits 的系数，模型前缀 → `{"context","output","read_factor"}`（每百万 token 的 credits），用于上游未报 credits 的请求及预算预留 |
 | `reported_usage` | `conservative` | `conservative` / `raw` 按字段保留最后上报值；`sum` 累加，`ignore` 用本地计量。输入报告中的隐藏项独立拆出，见用量口径说明 |
 | `hidden_tokens_billing` | `input` | `input` 按输入侧计价并跟随前缀缓存：命中轮按缓存读价、写入轮按写入价、无缓存按输入价；`off` 不收隐藏项 API 价，展示仍单独记录 |
-| `hidden_tokens` | 空 | 精确规范模型 id → 隐藏 token 数，缺省 4052；未实测模型标未校准 |
+| `hidden_tokens` | 空 | 精确规范模型 id → 隐藏 token 数；缺省用内置实测值（deepseek / minimax / glm / qwen 等），其余按 Claude 的 4052 并标未校准 |
 | `unknown_model_pricing` | `highest` | 未知模型告警并用已知最高各项单价（含长上下文档）；`reject` 在生成前拒绝 |
 | `openai_hosted_tools` | `drop` | OpenAI 内置工具（web_search 等）：`drop` 跳过并打 debug 日志；`reject` 返回 400 |
 | `identity` | kiro-cli 2.28.0 | 对上游声明的客户端身份（CLI 版本 / api_version / desktop UA），对齐 kiro-cli 以获得稳定兼容性 |
@@ -239,7 +239,7 @@ location /kiro/ {
 
 Kiro 的流里一般**不报 token**，只报上下文占用百分比和 credits。所以：
 
-- **input / output**：客户端输入与隐藏上下文分别计量。隐藏 token 默认 4052，不视为全部模型的实测值；`hidden_tokens` 可按精确模型 id 覆盖，Opus 5.5 保持默认并标未校准。校准只缩放客户端输入三项，不缩放输出，不把舍入余数记为普通输入。隐藏上下文以独立 `hidden_tokens` / `hidden_tokens_charged_usd` 记录。它排在整段前缀最前面，故跟随客户端前缀的缓存状态计价：本轮有 cache_read 时按缓存读价，只有 cache_write 时按写入价（客户端声明 1h 时按 1h），都没有时按输入价；账本行的 `hidden_cache_read` / `hidden_cache_write` 记录归类。热会话不再每轮按普通输入重复收 4052 token。`off` 关闭其 API 价计费。上游 credits 无隐藏项拆分，credits 口径的独立隐藏美元归因为 0。
+- **input / output**：客户端输入与隐藏上下文分别计量。隐藏 token 缺省取内置实测值，未实测的模型按 Claude 的 4052；`hidden_tokens` 可按精确模型 id 覆盖，Opus 5.5 保持默认并标未校准。校准只缩放客户端输入三项，不缩放输出，不把舍入余数记为普通输入。隐藏上下文以独立 `hidden_tokens` / `hidden_tokens_charged_usd` 记录。它排在整段前缀最前面，故跟随客户端前缀的缓存状态计价：本轮有 cache_read 时按缓存读价，只有 cache_write 时按写入价（客户端声明 1h 时按 1h），都没有时按输入价；账本行的 `hidden_cache_read` / `hidden_cache_write` 记录归类。热会话不再每轮按普通输入重复收 4052 token。`off` 关闭其 API 价计费。上游 credits 无隐藏项拆分，credits 口径的独立隐藏美元归因为 0。
 - **输入字段语义**：Anthropic `input_tokens` 仅为客户端未缓存输入；客户端总输入 = `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`，不含隐藏 token。OpenAI `prompt_tokens` / Responses `input_tokens` 为含客户端缓存的总输入，但不含隐藏 token。`count_tokens` 也分离隐藏字段。管理台缓存命中率分母不含隐藏 token。
 - **cache_read / cache_creation**：默认 `cache_mode: "auto"`，三种协议都自动模拟 5 分钟滑动 TTL 的前缀缓存，忽略客户端 `cache_control`。这样 OpenAI → sub2api → Anthropic 的链路即使没有缓存断点，也能返回缓存读写估算。设为 `protocol` 时，Anthropic Messages 才按客户端 `cache_control`（含顶层自动缓存）计量：每个断点往前回看 20 块，最多 4 个断点，支持 1h TTL；OpenAI 仍走自动缓存。最小可缓存长度按官方分模型表（512 / 1024 / 2048 / 4096）。这些拆分是本地模拟，不证明上游实际命中；上游报告输入侧 `tokenUsage` 时，按 `reported_usage` 配置采用报告值。
 - **两本账**：对下游收费（`cost_usd`，Claude API 官方价）与上游成本（`upstream_usd` = credits × `credit_usd`），管理台按 key / 号 / 模型 / 天显示毛利率与亏损。
@@ -340,7 +340,8 @@ CI 见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。
 # Token display and billing (2026-10-10)
 
 `hidden_tokens_billing` accepts `input` (default) or `off`. `hidden_tokens` is a
-model-id-to-integer configuration map; an absent model uses 4052. Do not treat
+model-id-to-integer configuration map; an absent model uses the builtin measured
+value (deepseek / minimax / glm / qwen), otherwise Claude's 4052. Do not treat
 this default as a measurement: Opus 5.5 remains **uncalibrated** until an account
 is available and the probe is run with `-window 1000000`.
 

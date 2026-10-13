@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"kiro-proxy/internal/kiro"
 	"kiro-proxy/internal/meter"
 )
 
@@ -123,7 +124,7 @@ func (s *Server) modelRows() []modelRow {
 		if _, configured := s.cfg.HiddenTokens[meter.CanonModel(m.ID)]; configured {
 			r.HiddenCalibration = "配置覆盖（需实测依据）"
 		}
-		if m.ID == "claude-sonnet-4.5" && r.HiddenTokens == 4052 {
+		if kiro.HiddenMeasured(m.ID) && r.HiddenTokens == kiro.HiddenTokens(m.ID) {
 			r.HiddenCalibration = "已校准"
 		}
 		if m.PromptCaching != nil {
