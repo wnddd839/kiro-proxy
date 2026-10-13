@@ -145,7 +145,12 @@ func (s *Server) prepare(r *http.Request, p proto, k *keys.Key) (*call, error) {
 		}
 	}
 	if c.req.Temperature != nil {
-		s.log.Warn("temperature 已忽略: upstream does not support forwarding", "proto", p)
+		// 客户端通常每次都带 temperature：只告警一次，免得淹没号池告警
+		if s.tempWarned.CompareAndSwap(false, true) {
+			s.log.Warn("temperature 已忽略: upstream does not support forwarding (logged once; later requests at debug)", "proto", p)
+		} else {
+			s.log.Debug("temperature 已忽略", "proto", p)
+		}
 	}
 	normalize.Request(&c.req, s.norm)
 	for i := range c.req.Tools {

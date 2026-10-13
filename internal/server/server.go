@@ -49,6 +49,7 @@ type Server struct {
 	holds        *holdTable // 在途请求为 key 预留的额度
 	hidden       *hiddenWatch
 	reportedSeen atomic.Int64 // 上游报了 tokenUsage 的回复数（采样用）
+	tempWarned   atomic.Bool  // temperature 已忽略的告警只打一次，之后记 debug
 
 	catalogBusy sync.Mutex
 	priceBusy   sync.Mutex

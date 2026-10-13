@@ -164,7 +164,7 @@ location /kiro/ {
 
 - `POST /v1/chat/completions`、`POST /v1/responses`（流式 / 非流式，含工具调用、reasoning），`usage` 里带 `cached_tokens` 与 `credits`
 - `POST /v1/messages`（流式 / 非流式）、`POST /v1/messages/count_tokens`（粗估）、`GET /v1/models`（拿不到模型列表时 503，不编造）
-- Kiro 不接收生成限制参数：`max_tokens`（未给则不在本地截断）与 `stop_sequences` / Chat `stop` 在本地限制下发并截断计费；`temperature` 明确日志告警“已忽略”。`tool_choice` 不转发，`top_p` 仍不支持
+- Kiro 不接收生成限制参数：`max_tokens`（未给则不在本地截断）与 `stop_sequences` / Chat `stop` 在本地限制下发并截断计费；`temperature` 首次出现时日志告警“已忽略”，之后记 debug。`tool_choice` 不转发，`top_p` 仍不支持
 - 路径前缀容错：`/messages`、`/v1/v1/messages`、`/anthropic/v1/messages`、尾 `/`、重复 `/` 都落到同一 handler
 - `GET/POST /admin/accounts`、`DELETE /admin/accounts/{id}`、`POST /admin/accounts/{id}/{enable|disable|refresh}`
 - `POST /admin/accounts/batch` `{"action":"test|limits|refresh|enable|disable|delete","ids":[]}`（ids 空 = 全部，delete 必须给 ids）
@@ -400,7 +400,7 @@ returns `max_tokens` (OpenAI: `length` / incomplete). Anthropic `stop_sequences`
 and Chat `stop` match across stream events, remove the matched sequence and all
 following text, and return `stop_sequence` with the matched string. Discarded
 output is not billed; local limits cannot prevent upstream work already done.
-Temperature is not forwarded and is logged as ignored.
+Temperature is not forwarded; the first occurrence is logged as a warning, later ones at debug.
 
 `upstream_connect_timeout`, `upstream_first_byte_timeout`, and
 `upstream_idle_timeout` default to `15s`, `3m`, and `120s`. The idle watchdog
