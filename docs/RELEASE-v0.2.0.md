@@ -64,4 +64,4 @@ export OPENAI_BASE_URL=http://127.0.0.1:8787/v1     # OpenAI SDK / Cursor / Code
 ## 说明
 
 - 仅用于个人学习、研究与自用；使用前请确认符合 Kiro / AWS 的服务条款。
-- 详细配置、计费口径与失败处理见 [README](https://github.com/wnddd839/kiro.cache#readme)；上游前缀稳定性与 Sonnet 5.5 实测见 [notes/prefix-stability.md](https://github.com/wnddd839/kiro.cache/blob/main/notes/prefix-stability.md)。
+- 详细配置、计费口径与失败处理见 [README](https://github.com/wnddd839/kiro.cache#readme)；上游前缀稳定性与 Sonnet 5.5 实测见 [docs/notes/prefix-stability.md](https://github.com/wnddd839/kiro.cache/blob/main/docs/notes/prefix-stability.md)。

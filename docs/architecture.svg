@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 260" role="img" aria-labelledby="matrixTitle matrixDesc">
+  <title id="matrixTitle">Client and protocol compatibility</title>
+  <desc id="matrixDesc">Clients connect over Anthropic Messages or OpenAI Chat Completions and Responses. The proxy translates both to Kiro's generateAssistantResponse.</desc>
+  <style>
+    .bg { fill: #F9F8F6; }
+    .line { stroke: #1C1C1C; stroke-width: 1; opacity: .18; fill: none; }
+    .ink { fill: none; stroke: #1C1C1C; stroke-linecap: round; stroke-linejoin: round; }
+    .label { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; fill: #1C1C1C; }
+    .muted { fill: #8A8782; }
+    .stamp { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 10px; fill: #8A8782; letter-spacing: .14em; }
+    .title { font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Songti SC", serif; font-size: 21px; fill: #1C1C1C; }
+  </style>
+
+  <rect class="bg" width="960" height="260"/>
+
+  <text class="stamp" x="40" y="44">COMPATIBILITY</text>
+  <text class="title" x="40" y="78">One local endpoint, three wire formats.</text>
+
+  <!-- clients -->
+  <text class="stamp" x="40" y="124">CLIENTS</text>
+  <text class="label" x="40" y="152">Claude Code</text>
+  <text class="label" x="40" y="178">Codex CLI</text>
+  <text class="label" x="40" y="204">Cursor / Cline</text>
+  <text class="label" x="40" y="230">OpenAI SDK</text>
+
+  <!-- proxy -->
+  <text class="stamp" x="360" y="124">KIRO.CACHE</text>
+  <g class="ink">
+    <rect x="360" y="138" width="240" height="98"/>
+  </g>
+  <text class="label" x="378" y="168">session pin</text>
+  <text class="label muted" x="378" y="190">prefix stabilize</text>
+  <text class="label muted" x="378" y="212">meter + budget</text>
+
+  <!-- upstream -->
+  <text class="stamp" x="760" y="124">UPSTREAM</text>
+  <g class="ink">
+    <rect x="760" y="138" width="160" height="98"/>
+  </g>
+  <text class="label" x="778" y="174">Kiro</text>
+  <text class="label muted" x="778" y="198">generateAssistant</text>
+  <text class="label muted" x="778" y="220">Response</text>
+
+  <!-- protocol labels -->
+  <text class="stamp" x="188" y="150">/v1/messages</text>
+  <text class="stamp" x="188" y="178">/v1/responses</text>
+  <text class="stamp" x="188" y="204">/v1/chat/completions</text>
+  <text class="stamp" x="188" y="230">any prefix</text>
+
+  <path class="line" d="M150 148h32"/>
+  <path class="line" d="M150 174h32"/>
+  <path class="line" d="M150 200h32"/>
+  <path class="line" d="M150 226h32"/>
+
+  <path class="line" d="M600 187h160"/>
+
+  <text class="stamp" x="620" y="178">AWS event stream</text>
+</svg>

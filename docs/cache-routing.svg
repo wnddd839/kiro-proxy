@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" role="img" aria-labelledby="routeTitle routeDesc">
+  <title id="routeTitle">How kiro.cache keeps an upstream prompt cache warm</title>
+  <desc id="routeDesc">A client request is keyed to a session, pinned to one account, given a stable conversation id, and sent with a stabilized prefix. Later turns follow the same path and hit the cache.</desc>
+  <style>
+    .bg { fill: #F9F8F6; }
+    .ink { fill: none; stroke: #1C1C1C; stroke-linecap: round; stroke-linejoin: round; }
+    .label { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #1C1C1C; letter-spacing: .04em; }
+    .muted { fill: #8A8782; }
+    .title { font-family: Georgia, "Iowan Old Style", "Palatino Linotype", "Songti SC", serif; font-size: 19px; fill: #1C1C1C; }
+    .stamp { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 10px; fill: #8A8782; letter-spacing: .14em; }
+    .dash { stroke-dasharray: 6 7; animation: flow 1.6s linear infinite; }
+    .warm { stroke: #1C1C1C; }
+    .cold { stroke: #B9B4AB; }
+    @keyframes flow { to { stroke-dashoffset: -26; } }
+    @media (prefers-reduced-motion: reduce) { .dash { animation: none; } }
+  </style>
+
+  <rect class="bg" width="960" height="470"/>
+
+  <text class="stamp" x="40" y="44">CACHE ROUTING</text>
+  <text class="title" x="40" y="76">Same session. Same account. Same prefix.</text>
+
+  <!-- turn 1 -->
+  <text class="stamp" x="40" y="128">TURN 1 · WRITE</text>
+
+  <g class="ink">
+    <rect x="40" y="146" width="150" height="64"/>
+    <rect x="250" y="146" width="150" height="64"/>
+    <rect x="460" y="146" width="150" height="64"/>
+    <rect x="670" y="146" width="210" height="64"/>
+  </g>
+  <text class="label" x="56" y="174">client</text>
+  <text class="label muted" x="56" y="194">/v1/messages</text>
+  <text class="label" x="266" y="174">session key</text>
+  <text class="label muted" x="266" y="194">header / hash</text>
+  <text class="label" x="476" y="174">account pin</text>
+  <text class="label muted" x="476" y="194">no round-robin</text>
+  <text class="label" x="686" y="174">Kiro upstream</text>
+  <text class="label muted" x="686" y="194">conversationId A</text>
+
+  <path class="ink cold" d="M190 178h52" marker-end="url(#arrow)"/>
+  <path class="ink cold" d="M400 178h52" marker-end="url(#arrow)"/>
+  <path class="ink cold" d="M610 178h52" marker-end="url(#arrow)"/>
+
+  <g class="ink">
+    <rect x="670" y="226" width="210" height="26"/>
+  </g>
+  <text class="label muted" x="686" y="243">cache write · full input</text>
+
+  <!-- turn 2 -->
+  <text class="stamp" x="40" y="300">TURN 2 · READ</text>
+
+  <g class="ink">
+    <rect x="40" y="318" width="150" height="64"/>
+    <rect x="250" y="318" width="150" height="64"/>
+    <rect x="460" y="318" width="150" height="64"/>
+    <rect x="670" y="318" width="210" height="64"/>
+  </g>
+  <text class="label" x="56" y="346">same client</text>
+  <text class="label muted" x="56" y="366">same history</text>
+  <text class="label" x="266" y="346">same key</text>
+  <text class="label muted" x="266" y="366">first user unchanged</text>
+  <text class="label" x="476" y="346">same account</text>
+  <text class="label muted" x="476" y="366">pinned</text>
+  <text class="label" x="686" y="346">same conversation</text>
+  <text class="label muted" x="686" y="366">conversationId A</text>
+
+  <path class="ink warm dash" d="M190 350h52" marker-end="url(#arrow)"/>
+  <path class="ink warm dash" d="M400 350h52" marker-end="url(#arrow)"/>
+  <path class="ink warm dash" d="M610 350h52" marker-end="url(#arrow)"/>
+
+  <g class="ink">
+    <rect x="670" y="398" width="210" height="26"/>
+  </g>
+  <text class="label muted" x="686" y="415">cache read · full input</text>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9" fill="none" stroke="#1C1C1C" stroke-width="1.5" stroke-linecap="round"/>
+    </marker>
+  </defs>
+</svg>

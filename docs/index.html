@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>kiro.cache — 让每一次使用都有迹可循</title>
-  <meta name="description" content="kiro.cache：围绕 Kiro 会话、缓存与用量的本地工具。集中查看账号、客户端接入与预算记录，让日常使用更有条理。" />
+  <title>kiro.cache — Kiro gateway for Claude Code, Codex, and Cursor</title>
+  <meta name="description" content="kiro.cache：把 Kiro 接到 Claude Code、Codex、Cursor 和任何 Anthropic / OpenAI 兼容客户端。会话粘号与稳定 conversationId，让上游 prompt cache 真正命中。" />
   <meta property="og:title" content="kiro.cache" />
-  <meta property="og:description" content="会话、缓存、用量与预算，一处查看。" />
+  <meta property="og:description" content="Kiro gateway for Claude Code, Codex, and Cursor. Cache-aware routing." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://wnddd839.github.io/kiro.cache/" />
   <meta property="og:image" content="https://wnddd839.github.io/kiro.cache/logo.svg" />
@@ -580,23 +580,23 @@
     <!-- Hero Section -->
     <section class="hero" aria-label="kiro.cache Hero">
       <div class="wrap">
-        <div class="hero-kicker">Sessions · Cache · Usage</div>
+        <div class="hero-kicker">Kiro · Claude Code · Codex · OpenAI / Anthropic</div>
         <h1 class="hero-title">
-          让每一次使用<br />
-          有迹可循<em>.</em>
+          把 Kiro<br />
+          接到你的工具链<em>.</em>
         </h1>
         <div class="hero-grid-12">
           <div class="hero-col-lead">
-            会话、缓存、用量与预算，一处查看。
-            把日常使用的细节整理在本机，方便接入熟悉的工具，也方便了解每一次消耗。
+            把 Kiro 接到 Claude Code、Codex、Cursor，以及任何说 Anthropic / OpenAI 协议的工具。
+            会话粘在同一账号和 conversationId 上，让 Kiro 自己的 prompt cache 真正命中。
           </div>
           <div class="hero-col-actions">
             <div class="hero-btn-row">
               <a class="btn btn-solid" href="#releases">下载最新发布</a>
-              <a class="btn btn-line" href="http://127.0.0.1:8787/ui" target="_blank">本地管理台</a>
+              <a class="btn btn-line" href="#integration">用 Docker 运行</a>
             </div>
             <div style="font-size:12px;color:var(--fg-40);letter-spacing:0.08em;text-transform:uppercase">
-              默认端点 127.0.0.1:8787 · 三种协议 · 两本账
+              本地端点 127.0.0.1:8787 · 三种协议 · 会话粘号 · 缓存友好
             </div>
           </div>
         </div>
@@ -609,9 +609,10 @@
         <div class="col-sidebar">
           <div class="section-num">01 /</div>
           <div class="section-label">Capabilities</div>
-          <h2 class="section-title">使用更连贯，<br />记录更清楚.</h2>
+          <h2 class="section-title">缓存命中优先，<br />其余围绕它.</h2>
           <p class="section-desc">
-            从会话连续性到用量记录，把容易忽略的使用细节放在一起。支持个人与小团队在本机管理自己的使用环境。
+            项目不做本地答案缓存。它把同一段对话认回来，让 Kiro 自己的前缀缓存在后续轮次命中。
+            账号、计费和管理台都服务于这个目标。
           </p>
         </div>
 
@@ -623,7 +624,7 @@
             </div>
             <p>
               同时说 <code>/v1/messages</code>（Anthropic）、<code>/v1/chat/completions</code> 与 <code>/v1/responses</code>（OpenAI）。
-              流式 / 非流式、工具调用、reasoning 全支持；路径前缀容错，客户端 base URL 带不带 <code>/v1</code> 都能用。
+              流式 / 非流式、工具调用、thinking 全支持；路径前缀容错，客户端 base URL 带不带 <code>/v1</code> 都能用。
             </p>
           </article>
 
@@ -634,7 +635,7 @@
             </div>
             <p>
               会话粘号 + 稳定 <code>conversationId</code> + 前缀修复：剥离 Claude Code 每次都变的 <code>x-anthropic-billing-header</code>、
-              工具声明排序，支持的模型使用原生思考参数，预算不再写进文本前缀。同一会话优先使用原号，忙时排队而非借号；保留历史图片，规范工具与 JSON 顺序。
+              工具声明排序、JSON 对象键规范化，支持的模型使用原生思考参数。同一会话优先使用原号，忙时排队而非借号。
             </p>
           </article>
 
@@ -645,7 +646,7 @@
             </div>
             <p>
               浏览器 OAuth（Google / GitHub / Builder ID / IdC）、导入 Kiro IDE 凭证、手填 token / API key。
-              单飞 refresh、冷却、额度轮询；窗口内多数号同类失败判为全局故障，只冷却不停号，任一请求成功即解除。
+              单飞 refresh、冷却、额度查询；窗口内多数号同类失败判为全局故障，只冷却不停号。
             </p>
           </article>
 
@@ -655,8 +656,8 @@
               <span class="article-index">CRED-04</span>
             </div>
             <p>
-              按 Anthropic 官方规则在本地模拟 cache read / write，按 Kiro credits 折算上游成本；
-              对下游收费（Claude 官方价）与上游成本分开记，管理台按 key / 号 / 模型 / 天显示毛利率与亏损。
+              按 Anthropic 规则在本地模拟 cache read / write，按 Kiro credits 折算上游成本；
+              对下游收费与上游成本分开记，管理台按 key / 号 / 模型 / 天展示，并支持 CSV 导出。
             </p>
           </article>
 
@@ -666,19 +667,19 @@
               <span class="article-index">KEYS-05</span>
             </div>
             <p>
-              管理台「接入」页直接生成下游 key，明文只显示一次，服务端只存 sha256。
+              管理台「接入」页直接生成下游 key，明文只显示一次，服务端只存 SHA-256。
               客户端带 <code>x-api-key</code> 或 <code>Authorization: Bearer</code> 即可。
             </p>
           </article>
 
           <article class="article-item">
             <div class="article-topline">
-              <h3>上游行为可探测</h3>
-              <span class="article-index">PROB-06</span>
+              <h3>单文件与多架构容器</h3>
+              <span class="article-index">DIST-06</span>
             </div>
             <p>
-              内置 <code>probe</code> 子命令直打上游，实测 token 上报口径、缓存存活时间、显式 cachePoint 是否生效、
-              credits 折算系数；<code>analyze</code> 给出可直接贴进配置的结论。
+              预编译二进制覆盖 Linux、macOS、Windows 的 amd64 / arm64；
+              容器镜像发布到 GHCR，支持 <code>linux/amd64</code> 与 <code>linux/arm64</code>，运行时不依赖 shell 或包管理器。
             </p>
           </article>
         </div>
@@ -698,6 +699,14 @@
         </div>
 
         <div class="col-content">
+          <div class="code-block" style="margin-bottom:1.5rem">
+            <div class="actions" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap">
+              <span style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--fg-40)">Docker Compose</span>
+              <button type="button" class="btn btn-line" style="padding:8px 16px;font-size:11px" onclick="copyDockerSnippet()">复制</button>
+            </div>
+            <pre class="integration-code-pre" id="dockerSnippet"></pre>
+          </div>
+
           <div class="integration-box">
             <nav class="integration-nav">
               <button type="button" class="tab-trigger active" onclick="switchClientTab('claude', this)">Claude Code</button>
@@ -726,13 +735,18 @@
         <div class="col-sidebar">
           <div class="section-num">03 /</div>
           <div class="section-label">Distribution</div>
-          <h2 class="section-title">单文件即用，<br />无需安装.</h2>
+          <h2 class="section-title">单文件，<br />或多架构镜像.</h2>
           <p class="section-desc">
-            下载对应平台可执行文件，直接运行，最新版本 <strong>v0.4.0</strong>。当前发布文件仍沿用 kiro-proxy 名称；账号与账本都落在本机。
+            最新版本 <strong>v0.4.0</strong>。二进制覆盖 Linux / macOS / Windows 的 amd64 与 arm64；
+            容器镜像发布到 GHCR，支持 <code>linux/amd64</code> 与 <code>linux/arm64</code>。
           </p>
         </div>
 
         <div class="col-content">
+          <div class="dl-meta" style="margin:0 0 1.5rem">
+            容器镜像（打下一个 <code>v*</code> tag 后发布）：<a href="https://github.com/wnddd839/kiro.cache/pkgs/container/kiro-cache">ghcr.io/wnddd839/kiro-cache:latest</a>
+          </div>
+
           <table class="dl-table">
             <thead>
               <tr>
@@ -742,19 +756,37 @@
             </thead>
             <tbody>
               <tr>
-                <td>Windows 64 位 (x64)</td>
+                <td>Windows x64</td>
                 <td>
                   <a href="https://github.com/wnddd839/kiro.cache/releases/latest/download/kiro-proxy-windows-amd64.exe">kiro-proxy-windows-amd64.exe</a>
                 </td>
               </tr>
               <tr>
-                <td>Linux 64 位 (amd64)</td>
+                <td>Windows arm64</td>
+                <td>
+                  <a href="https://github.com/wnddd839/kiro.cache/releases/latest/download/kiro-proxy-windows-arm64.exe">kiro-proxy-windows-arm64.exe</a>
+                </td>
+              </tr>
+              <tr>
+                <td>Linux x64</td>
                 <td>
                   <a href="https://github.com/wnddd839/kiro.cache/releases/latest/download/kiro-proxy-linux-amd64">kiro-proxy-linux-amd64</a>
                 </td>
               </tr>
               <tr>
-                <td>macOS Apple 芯片 (Apple Silicon arm64)</td>
+                <td>Linux arm64</td>
+                <td>
+                  <a href="https://github.com/wnddd839/kiro.cache/releases/latest/download/kiro-proxy-linux-arm64">kiro-proxy-linux-arm64</a>
+                </td>
+              </tr>
+              <tr>
+                <td>macOS Intel</td>
+                <td>
+                  <a href="https://github.com/wnddd839/kiro.cache/releases/latest/download/kiro-proxy-darwin-amd64">kiro-proxy-darwin-amd64</a>
+                </td>
+              </tr>
+              <tr>
+                <td>macOS Apple Silicon</td>
                 <td>
                   <a href="https://github.com/wnddd839/kiro.cache/releases/latest/download/kiro-proxy-darwin-arm64">kiro-proxy-darwin-arm64</a>
                 </td>
@@ -783,18 +815,18 @@
         <div class="steps-deck">
           <div class="step-card">
             <div class="step-num">01 /</div>
-            <h4>登录并加入号池</h4>
-            <p>运行 <code>kiro-proxy login</code> 走浏览器 OAuth（Google / GitHub / Builder ID / IdC），或用 <code>import-ide</code> 导入 Kiro IDE 当前登录。可重复加多号。</p>
+            <h4>启动并登录</h4>
+            <p>用 Docker Compose 或二进制启动，打开管理台「号池」页完成 OAuth。服务器上用「粘贴回调地址」；也可以导入 Kiro IDE 当前登录。</p>
           </div>
           <div class="step-card">
             <div class="step-num">02 /</div>
-            <h4>启动并生成 API Key</h4>
-            <p>直接运行 <code>kiro-proxy</code>，默认监听 <code>127.0.0.1:8787</code>。打开管理台 <code>http://127.0.0.1:8787/ui</code>，在「接入」页一键生成 API Key。</p>
+            <h4>生成 API Key</h4>
+            <p>在「接入」页一键生成 key。明文只显示一次，服务端只存 SHA-256；同一页可以直接复制 Base URL 与 curl 示例。</p>
           </div>
           <div class="step-card">
             <div class="step-num">03 /</div>
             <h4>配置下游工具</h4>
-            <p>Claude Code 填 <code>ANTHROPIC_BASE_URL=http://127.0.0.1:8787</code>；OpenAI SDK / Cursor 等填 <code>http://127.0.0.1:8787/v1</code>，带上 API Key。</p>
+            <p>Claude Code 填 <code>ANTHROPIC_BASE_URL=http://127.0.0.1:8787</code>；Codex、Cursor、OpenAI SDK 填 <code>http://127.0.0.1:8787/v1</code>，带上 API Key。</p>
           </div>
         </div>
       </div>
@@ -833,11 +865,11 @@
           把 Kiro 接到你的工具链.
         </h2>
         <p class="cta-desc">
-          管理台完成登录，客户端只认 Base URL 和 API Key。纯 Go 单文件，本地运行，零冗余开销。
+          管理台完成登录，客户端只认 Base URL 和 API Key。纯 Go 单文件，也可用多架构容器运行。
         </p>
         <div class="hero-btn-row">
           <a class="btn btn-solid" href="https://github.com/wnddd839/kiro.cache" target="_blank" rel="noopener">访问 GitHub 仓库</a>
-          <a class="btn btn-line" href="https://github.com/wnddd839/kiro.cache#readme" target="_blank" rel="noopener">查阅完整 README</a>
+          <a class="btn btn-line" href="https://github.com/wnddd839/kiro.cache/issues/new/choose" target="_blank" rel="noopener">提交 issue</a>
         </div>
       </div>
     </section>
@@ -861,6 +893,17 @@
   <div class="toast-box" id="siteToast">已复制代码到剪贴板</div>
 
   <script>
+    const dockerSnippet = `git clone https://github.com/wnddd839/kiro.cache.git
+cd kiro.cache
+
+cat > .env <<EOF
+KIRO_API_KEY=$(openssl rand -hex 24)
+KIRO_ADMIN_TOKEN=$(openssl rand -hex 24)
+EOF
+
+docker compose up -d --build
+# open http://127.0.0.1:8787/ui`;
+
     const codeMap = {
       claude: `# Claude Code：导出环境变量后直接启动\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:8787"\nexport ANTHROPIC_AUTH_TOKEN="你的网关 API Key"\nclaude`,
       openai: `from openai import OpenAI\n\nclient = OpenAI(\n    base_url="http://127.0.0.1:8787/v1",\n    api_key="你的网关 API Key"\n)\n\nresp = client.chat.completions.create(\n    model="claude-sonnet-4.5",\n    messages=[{"role": "user", "content": "Ping!"}]\n)\nprint(resp.choices[0].message.content)`,
@@ -895,8 +938,17 @@
       });
     }
 
+    function copyDockerSnippet() {
+      navigator.clipboard.writeText(dockerSnippet).then(() => {
+        showToast('已复制 Docker 启动命令');
+      }).catch(() => {
+        showToast('复制失败，请手动选取');
+      });
+    }
+
     // 初始化渲染代码选项卡
     document.getElementById('integrationCodeBlock').textContent = codeMap[activeClientKey];
+    document.getElementById('dockerSnippet').textContent = dockerSnippet;
   </script>
 </body>
 </html>

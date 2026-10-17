@@ -1,9 +1,53 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="kpTitle">
-  <title id="kpTitle">kiro.cache</title>
-  <rect width="256" height="256" fill="#F9F8F6"/>
-  <g fill="none" stroke="#1C1C1C" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M72 64v128"/>
-    <path d="M72 128 172 64"/>
-    <path d="M118 102 176 192"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="kcTitle kcDesc">
+  <title id="kcTitle">kiro.cache</title>
+  <desc id="kcDesc">A monoline K inside a cache ring that quietly pulses.</desc>
+  <style>
+    .ink { stroke: #1C1C1C; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .k { stroke-width: 15; }
+    .ring { stroke-width: 3; opacity: .35; }
+    .segment { stroke-width: 4; opacity: 1; }
+    .glow { stroke-width: 9; opacity: 0; }
+    .pulse { animation: pulse 4.8s ease-in-out infinite; transform-origin: 128px 128px; }
+    .orbit { animation: orbit 16s linear infinite; transform-origin: 128px 128px; }
+    .fade { animation: fade 4.8s ease-in-out infinite; }
+    .fade2 { animation: fade 4.8s ease-in-out infinite; animation-delay: .6s; }
+    .fade3 { animation: fade 4.8s ease-in-out infinite; animation-delay: 1.2s; }
+    @keyframes pulse {
+      0%, 100% { opacity: .35; transform: scale(1); }
+      50% { opacity: .8; transform: scale(1.035); }
+    }
+    @keyframes orbit { to { transform: rotate(360deg); } }
+    @keyframes fade {
+      0%, 100% { opacity: .12; }
+      45% { opacity: .95; }
+      55% { opacity: .95; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pulse, .orbit, .fade, .fade2, .fade3 { animation: none; }
+      .pulse { opacity: .5; }
+      .fade, .fade2, .fade3 { opacity: .45; }
+    }
+  </style>
+
+  <rect width="256" height="256" rx="0" fill="#F9F8F6"/>
+
+  <!-- cache ring -->
+  <g class="pulse">
+    <circle class="ink ring" cx="128" cy="128" r="92"/>
+    <circle class="ink ring" cx="128" cy="128" r="78" opacity=".18"/>
+  </g>
+
+  <!-- orbiting cache segments -->
+  <g class="orbit">
+    <g class="fade"><path class="ink segment" d="M128 36a92 92 0 0 1 65 27"/></g>
+    <g class="fade2"><path class="ink segment" d="M220 128a92 92 0 0 1-27 65"/></g>
+    <g class="fade3"><path class="ink segment" d="M128 220a92 92 0 0 1-65-27"/></g>
+  </g>
+
+  <!-- K -->
+  <g class="ink k">
+    <path d="M92 66v124"/>
+    <path d="M92 130 170 66"/>
+    <path d="M118 112 178 190"/>
   </g>
 </svg>
