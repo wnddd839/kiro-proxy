@@ -2,14 +2,14 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 EXT := $(if $(filter Windows_NT,$(OS)),.exe,)
 
-# 只格式化 git 跟踪的 Go 文件：vendor/ 里放的是参考用的 .mjs，将来若放 Go 也不该被 check 拦下。
+# 只格式化 git 跟踪的 Go 文件：third_party/ 里放的是参考用的 .mjs，将来若放 Go 也不该被 check 拦下。
 # 配方不用 shell 内建（test / ! / grep）：make 在 Windows 上默认用 cmd.exe，它们都不存在。
 GOFILES := $(shell git ls-files '*.go' 2>/dev/null)
 ifeq ($(strip $(GOFILES)),)
 GOFILES := .
 endif
 
-.PHONY: build test check fmt lint release release-checksums clean
+.PHONY: build test check fmt lint release release-checksums docker docker-run clean
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kiro-proxy$(EXT) ./cmd/kiro-proxy
@@ -37,10 +37,24 @@ endif
 lint:
 	go vet ./...
 
+# 本机构建镜像；多架构由 .github/workflows/release.yml 负责。
+docker:
+	docker build --build-arg VERSION=$(VERSION) -t kiro-cache:$(VERSION) .
+
+# 本地跑容器：数据落在命名卷里，端口只绑回环。
+docker-run:
+	docker run --rm -p 127.0.0.1:8787:8787 \
+		-e KIRO_API_KEY \
+		-e KIRO_ADMIN_TOKEN \
+		-v kiro-data:/data kiro-cache:$(VERSION)
+
 # 交叉编译到 releases/，并生成校验和。
 release:
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o releases/kiro-proxy-windows-amd64.exe ./cmd/kiro-proxy
+	GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o releases/kiro-proxy-windows-arm64.exe ./cmd/kiro-proxy
 	GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o releases/kiro-proxy-linux-amd64 ./cmd/kiro-proxy
+	GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o releases/kiro-proxy-linux-arm64 ./cmd/kiro-proxy
+	GOOS=darwin  GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o releases/kiro-proxy-darwin-amd64 ./cmd/kiro-proxy
 	GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o releases/kiro-proxy-darwin-arm64 ./cmd/kiro-proxy
 	$(MAKE) release-checksums
 

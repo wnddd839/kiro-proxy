@@ -1,0 +1,23 @@
+# Build context
+.git
+.gitignore
+.github
+.cache
+bin
+releases
+docs/screenshots
+third_party
+*.log
+*.exe
+
+# Local runtime data and secrets
+accounts.json
+accounts.json.state.json
+keys.json
+usage.jsonl
+usage.jsonl.*
+promptcache.json
+*.sessions.json
+prices.json
+kiro-proxy.json
+.env

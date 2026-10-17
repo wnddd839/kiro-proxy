@@ -1,0 +1,78 @@
+name: Cache hit problem
+description: Cache read share is low, or it dropped after an upgrade.
+title: "cache: "
+labels: ["cache"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Cache hits depend on the account, the conversationId, the prefix, and
+        the time between turns. Short sessions always look bad: the first turn
+        writes and cannot read. Fill in what you can from the console request
+        page. Do not paste tokens or conversation content.
+  - type: input
+    id: version
+    attributes:
+      label: kiro.cache version
+      placeholder: v0.4.0
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Client and version
+      placeholder: Claude Code 2.x
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: conversation_mode
+      options:
+        - session (default)
+        - random
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: claude-sonnet-4.5
+    validations:
+      required: true
+  - type: input
+    id: turns
+    attributes:
+      label: How many turns are in the conversation?
+      placeholder: "10"
+    validations:
+      required: true
+  - type: input
+    id: interval
+    attributes:
+      label: Typical gap between turns
+      placeholder: under 1 minute / about 5 minutes / over 10 minutes
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: What the console shows
+      description: Hit rate, cache read, cache write, input, and whether the account is pinned.
+    validations:
+      required: true
+  - type: textarea
+    id: changes
+    attributes:
+      label: What changes between turns?
+      description: Tool set, system prefix, thinking budget, MCP servers, model.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I compared a multi-turn conversation, not a single request.
+          required: true
+        - label: I removed tokens, API keys, and conversation content.
+          required: true

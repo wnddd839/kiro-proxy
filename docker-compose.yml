@@ -1,0 +1,26 @@
+services:
+  kiro-cache:
+    # Built from this checkout so `docker compose up` works without waiting
+    # for a published image. To use GHCR instead, remove `build` and set:
+    #   image: ghcr.io/wnddd839/kiro-cache:latest
+    build:
+      context: .
+      args:
+        VERSION: ${KIRO_VERSION:-dev}
+    image: kiro-cache:local
+    container_name: kiro-cache
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      # Required. The container listens on 0.0.0.0, so the startup guard
+      # needs at least one downstream key. This is a full-access key.
+      KIRO_API_KEY: "${KIRO_API_KEY:?set KIRO_API_KEY to a long random string}"
+      # Required for the admin UI: requests arrive through the Docker bridge,
+      # so the console cannot rely on being "local" inside the container.
+      KIRO_ADMIN_TOKEN: "${KIRO_ADMIN_TOKEN:?set KIRO_ADMIN_TOKEN to a long random string}"
+    volumes:
+      - kiro-data:/data
+
+volumes:
+  kiro-data:

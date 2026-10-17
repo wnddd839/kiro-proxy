@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a capability, client, or deployment improvement.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the use case before the implementation. This project is small
+        on purpose; features that add a second source of truth or a local
+        answer cache are unlikely to be accepted.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+  - type: input
+    id: client
+    attributes:
+      label: Client or deployment this affects
+      placeholder: Codex CLI, Docker on arm64, ...
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and the documentation.
+          required: true

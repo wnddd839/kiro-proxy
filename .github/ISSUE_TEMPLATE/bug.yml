@@ -1,0 +1,89 @@
+name: Bug report
+description: Something is broken or behaves differently from the documentation.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste account tokens, refresh tokens, API keys, or full request bodies.
+        Redact account IDs and emails if you share screenshots.
+  - type: input
+    id: version
+    attributes:
+      label: kiro.cache version
+      description: Output of `kiro-proxy -version`, or the container image tag.
+      placeholder: v0.4.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux amd64
+        - Linux arm64
+        - macOS Intel
+        - macOS Apple Silicon
+        - Windows x64
+        - Windows arm64
+        - Docker
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Client and version
+      description: For example Claude Code 2.x, Codex CLI 0.x, Cursor 1.x, or an SDK.
+    validations:
+      required: true
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: Protocol
+      options:
+        - Anthropic Messages (/v1/messages)
+        - OpenAI Chat Completions (/v1/chat/completions)
+        - OpenAI Responses (/v1/responses)
+        - Admin API
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened?
+      description: Include the HTTP status and the console request row if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Redact credentials, tokens, and conversation content.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I removed tokens, API keys, and personal data from this report.
+          required: true
+        - label: I searched existing issues for the same problem.
+          required: true

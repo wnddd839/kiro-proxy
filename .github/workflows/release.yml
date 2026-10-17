@@ -1,0 +1,149 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, e.g. v0.4.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/kiro-cache
+
+jobs:
+  binaries:
+    name: cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          targets=(
+            "windows amd64 .exe"
+            "windows arm64 .exe"
+            "linux amd64 "
+            "linux arm64 "
+            "darwin amd64 "
+            "darwin arm64 "
+          )
+          for t in "${targets[@]}"; do
+            read -r goos goarch ext <<< "$t"
+            out="dist/kiro-proxy-${goos}-${goarch}${ext}"
+            echo "building $out"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "$out" ./cmd/kiro-proxy
+          done
+
+      - name: Checksums and smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum kiro-proxy-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          file kiro-proxy-*
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.value }}
+          name: kiro-proxy ${{ steps.version.outputs.value }}
+          files: |
+            dist/kiro-proxy-*
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          draft: false
+
+  image:
+    name: container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.value }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.value }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  verify:
+    name: verify release
+    needs: [binaries, image]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Full test suite
+        run: go test -race -count=1 ./...
