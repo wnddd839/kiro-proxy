@@ -333,9 +333,19 @@ func (s *SignIn) Run(ctx context.Context) (Login, error) {
 }
 
 // sendCallback 给手工回调回一个结果，收方未读或已取消也不阻塞 Run。
+//
+// 先做一次非阻塞发送：登录成功时 Run 会在 settle 返回后立刻取消 ctx，此时
+// reply 通常已经可写。若把“可写”和“ctx 已取消”放在同一个 select 里，Go 会
+// 随机选一个，成功的回调可能被丢掉（管理台表现为超时）。只有 reply 满或没有
+// 接收方时才回退到等待取消。
 func sendCallback(ctx context.Context, reply chan<- CallbackResult, res CallbackResult) {
 	if reply == nil {
 		return
+	}
+	select {
+	case reply <- res:
+		return
+	default:
 	}
 	select {
 	case reply <- res:

@@ -214,6 +214,49 @@ func TestParseCallbackURL(t *testing.T) {
 	}
 }
 
+// 登录成功会立刻取消 ctx。此时 reply 仍可写，结果必须送达，不能因为
+// “已取消”分支同时就绪而被随机丢掉。
+func TestSendCallbackDeliversAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	for i := range 200 {
+		reply := make(chan CallbackResult, 1)
+		sendCallback(ctx, reply, CallbackResult{Done: true})
+		select {
+		case r := <-reply:
+			if !r.Done {
+				t.Fatalf("iteration %d: reply = %+v", i, r)
+			}
+		default:
+			t.Fatalf("iteration %d: reply dropped after cancellation", i)
+		}
+	}
+}
+
+// 没有接收方时不能永久阻塞：ctx 取消后必须返回。
+func TestSendCallbackUnblocksOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	reply := make(chan CallbackResult) // 无人接收
+	done := make(chan struct{})
+	go func() {
+		sendCallback(ctx, reply, CallbackResult{Done: true})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("sendCallback returned while the reply channel had no receiver")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("sendCallback did not return after cancellation")
+	}
+}
+
 // 手工通道关闭后，登录协程不 panic，仍正常等人。
 func TestSignInManualChannelClosed(t *testing.T) {
 	_, c := newFake(t, func(w http.ResponseWriter, _ *http.Request, _ []byte) {})
