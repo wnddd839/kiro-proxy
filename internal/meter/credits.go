@@ -3,7 +3,7 @@ package meter
 import (
 	"math"
 
-	"kiro-proxy/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/turn"
 )
 
 // CreditRate 是按 token 估 Kiro credits 的系数：每百万 token 的 credits。

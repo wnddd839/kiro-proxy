@@ -17,8 +17,8 @@ import (
 	"strings"
 	"sync"
 
-	"kiro-proxy/internal/tokenizer"
-	"kiro-proxy/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/tokenizer"
+	"github.com/wnddd839/kiro.cache/internal/turn"
 )
 
 // tokenScale 把 Claude 2 分词器的计数换算到现行 Claude 模型。

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"kiro-proxy/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
 )
 
 func mustJSON(t *testing.T, v any) string {

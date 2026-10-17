@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"time"
 
-	"kiro-proxy/internal/anthropic"
-	"kiro-proxy/internal/keys"
-	"kiro-proxy/internal/normalize"
-	"kiro-proxy/internal/sessionpin"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/normalize"
+	"github.com/wnddd839/kiro.cache/internal/sessionpin"
 )
 
 type nativePin struct {

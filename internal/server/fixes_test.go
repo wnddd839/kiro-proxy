@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/keys"
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/meter"
-	"kiro-proxy/internal/turn"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 // 没设 admin_token：只放行本机（回环连接 + 本机 Host）。局域网与 DNS rebinding 都拒。

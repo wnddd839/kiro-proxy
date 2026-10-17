@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"kiro-proxy/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
 )
 
 // ModelRequestSchema 是模型目录中原生参数说明所需的 JSON Schema 子集。

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/meter"
 )
 
 var (

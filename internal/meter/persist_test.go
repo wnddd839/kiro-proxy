@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
 )
 
 func TestCacheSaveLoad(t *testing.T) {

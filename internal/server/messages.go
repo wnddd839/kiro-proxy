@@ -15,17 +15,17 @@ import (
 	"strings"
 	"time"
 
-	"kiro-proxy/internal/anthropic"
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/keys"
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/meter"
-	"kiro-proxy/internal/normalize"
-	"kiro-proxy/internal/openai"
-	"kiro-proxy/internal/pool"
-	"kiro-proxy/internal/sessionpin"
-	"kiro-proxy/internal/turn"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/normalize"
+	"github.com/wnddd839/kiro.cache/internal/openai"
+	"github.com/wnddd839/kiro.cache/internal/pool"
+	"github.com/wnddd839/kiro.cache/internal/sessionpin"
+	"github.com/wnddd839/kiro.cache/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 // proto 是下游协议。三者共用同一条分发管线，只在解析请求与写回复时不同。

@@ -15,7 +15,7 @@ import (
 	"slices"
 	"strings"
 
-	"kiro-proxy/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
 )
 
 // Options 控制整理行为。

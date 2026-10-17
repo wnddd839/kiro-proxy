@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/pool"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/pool"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 // New 即使拿到裸 logger 也必须包上脱敏 handler，防止测试 / 第三方直传时泄漏。

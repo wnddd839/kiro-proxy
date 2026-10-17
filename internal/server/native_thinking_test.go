@@ -9,7 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 func TestNativeThinkingAcrossProtocols(t *testing.T) {

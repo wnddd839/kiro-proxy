@@ -3,7 +3,7 @@ package server
 import (
 	"sync"
 
-	"kiro-proxy/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/keys"
 )
 
 // hold 是一个在途请求在准入时为 key 预留的额度。

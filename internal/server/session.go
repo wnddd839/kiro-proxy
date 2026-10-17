@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"kiro-proxy/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
 )
 
 const maxSessions = 4096

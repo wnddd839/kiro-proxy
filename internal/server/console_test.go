@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
 )
 
 func (h *harness) do(t *testing.T, method, path string, header map[string]string) (int, []byte) {

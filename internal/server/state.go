@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/sessionpin"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/sessionpin"
 )
 
 // 会话状态落盘。

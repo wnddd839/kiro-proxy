@@ -26,8 +26,8 @@ import (
 	"sync"
 	"time"
 
-	"kiro-proxy/internal/anthropic"
-	"kiro-proxy/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
 )
 
 // Target 是被测的号与模型。

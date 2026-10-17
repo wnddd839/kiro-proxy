@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/meter"
 )
 
 // ConversationMode 决定上游 conversationId 怎么取。
@@ -131,6 +131,11 @@ type Config struct {
 	DebugRequestsRetention Duration `json:"debug_requests_retention,omitzero"`
 	// AllowInsecureListen 显式允许在没有下游 key 时监听非回环地址；启动时会打醒目警告。
 	AllowInsecureListen bool `json:"allow_insecure_listen,omitzero"`
+
+	// EnvAdminToken / EnvAPIKey 只从环境变量读取，不写进配置文件。
+	// 容器里用它们注入密钥，避免把 secret 固化到镜像或配置卷。
+	EnvAdminToken string `json:"-"`
+	EnvAPIKey     string `json:"-"`
 }
 
 // Default 是默认配置。
@@ -193,8 +198,11 @@ func (c Config) KiroCachePoints() (kiro.CachePoints, error) {
 }
 
 // Load 读配置；文件不存在时返回默认值。文件里没写的字段保持默认。
+// KIRO_ADMIN_TOKEN / KIRO_API_KEY 从环境变量补充，适合容器部署。
 func Load(path string) (Config, error) {
 	c := Default()
+	c.EnvAdminToken = strings.TrimSpace(os.Getenv("KIRO_ADMIN_TOKEN"))
+	c.EnvAPIKey = strings.TrimSpace(os.Getenv("KIRO_API_KEY"))
 	raw, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"kiro-proxy/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/turn"
 )
 
 // Codex 的新写法：custom（apply_patch）、namespace 分组、additional_tools 输入项都转换，不悄悄丢。

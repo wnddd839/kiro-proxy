@@ -9,10 +9,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"kiro-proxy/internal/anthropic"
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/meter"
-	"kiro-proxy/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/turn"
 )
 
 const pingEvery = 15 * time.Second

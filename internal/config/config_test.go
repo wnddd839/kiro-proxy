@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/meter"
 )
 
 // 没写的字段用默认：自动缓存、内置工具 drop、每号并发 3、熔断窗口 2m。
@@ -49,5 +49,22 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if _, err := Load(path); err != nil {
 		t.Errorf("valid api_keys rejected: %v", err)
+	}
+}
+
+func TestLoadEnvSecrets(t *testing.T) {
+	t.Setenv("KIRO_ADMIN_TOKEN", "  admin-from-env  ")
+	t.Setenv("KIRO_API_KEY", "  key-from-env  ")
+	path := filepath.Join(t.TempDir(), "missing.json")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EnvAdminToken != "admin-from-env" || c.EnvAPIKey != "key-from-env" {
+		t.Fatalf("env secrets = %q / %q", c.EnvAdminToken, c.EnvAPIKey)
+	}
+	// The config file itself must not gain the env values; main applies them.
+	if c.AdminToken != "" || len(c.APIKeys) != 0 {
+		t.Fatalf("env leaked into config defaults: %q / %v", c.AdminToken, c.APIKeys)
 	}
 }

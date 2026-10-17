@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"kiro-proxy/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
 )
 
 // 缓存规则取 Anthropic API：前缀顺序 tools → system → messages；

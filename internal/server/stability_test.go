@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/keys"
-	"kiro-proxy/internal/meter"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 func TestLocalOutputLimitsHTTP(t *testing.T) {

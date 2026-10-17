@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
 )
 
 // 全局熔断按窗口内请求结果的失败比例判定：多数成功不熔断；单次成功不清历史；

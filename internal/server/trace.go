@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"kiro-proxy/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
 )
 
 type requestTrace struct {

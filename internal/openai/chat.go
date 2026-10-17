@@ -3,7 +3,7 @@ package openai
 import (
 	"net/http"
 
-	"kiro-proxy/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/turn"
 )
 
 // ---- 流式 ----

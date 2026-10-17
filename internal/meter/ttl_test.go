@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/anthropic"
-	"kiro-proxy/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/turn"
 )
 
 func ephemeral(ttl string) *anthropic.CacheControl {

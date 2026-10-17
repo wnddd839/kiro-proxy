@@ -17,10 +17,10 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/keys"
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/pool"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/pool"
 )
 
 // fakeKiro 是本地上游：记录每次 generateAssistantResponse 的 token 与 body。

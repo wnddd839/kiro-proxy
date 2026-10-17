@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
 )
 
 const testArn = "arn:aws:codewhisperer:us-east-1:111111111111:profile/TEST"

@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/anthropic"
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/meter"
-	"kiro-proxy/internal/turn"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 // 隐藏 token 漂移监控：稳定基线不告警，持续偏离超过容差时告警，只保留最近一窗样本。

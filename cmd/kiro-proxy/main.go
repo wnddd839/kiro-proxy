@@ -1,6 +1,6 @@
 // kiro-proxy 是本地 Kiro 号池分发层：对外说 Anthropic Messages，对内说 Kiro。
 //
-//	kiro-proxy [-config kiro-proxy.json]                启动服务
+//	kiro-proxy [-config kiro-proxy.json] [--listen 0.0.0.0:8787] [--allow-insecure-listen]
 //	kiro-proxy -config kiro-proxy.json import-ide        把 Kiro IDE 当前登录加入号池
 //	kiro-proxy -config kiro-proxy.json login             浏览器登录 Kiro（Google / GitHub / Builder ID / IdC）并加入号池；服务器上可粘贴回调地址
 //	kiro-proxy -config kiro-proxy.json list              列出号池
@@ -23,12 +23,12 @@ import (
 	"syscall"
 	"time"
 
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/keys"
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/pool"
-	"kiro-proxy/internal/server"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/pool"
+	"github.com/wnddd839/kiro.cache/internal/server"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 // version 由构建注入：-ldflags "-X main.version=v1.2.3"。
@@ -48,16 +48,28 @@ func run() error {
 	cfgPath := flag.String("config", "kiro-proxy.json", "config file (missing file = defaults)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	allowInsecure := flag.Bool("allow-insecure-listen", false, "allow a non-loopback listener with no downstream api_keys (dangerous)")
+	listen := flag.String("listen", "", "override config listen address, e.g. 0.0.0.0:8787")
+	healthcheck := flag.Bool("healthcheck", false, "probe the local /health endpoint and exit (for container health checks)")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("kiro-proxy", version)
 		return nil
+	}
+	if *healthcheck {
+		addr := *listen
+		if addr == "" {
+			addr = "127.0.0.1:8787"
+		}
+		return probeHealth(addr)
 	}
 
 	path, legacy := configPath(*cfgPath, isFlagSet("config"))
 	cfg, err := config.Load(path)
 	if err != nil {
 		return err
+	}
+	if *listen != "" {
+		cfg.Listen = *listen
 	}
 	cfg.AllowInsecureListen = cfg.AllowInsecureListen || *allowInsecure
 	var level slog.Level
@@ -68,6 +80,12 @@ func run() error {
 	log = kiro.SafeLogger(log) // 日志一律经过脱敏的 handler
 	if legacy {
 		log.Warn("using legacy config file; rename it to kiro-proxy.json", "file", path)
+	}
+	if cfg.EnvAdminToken != "" {
+		cfg.AdminToken = cfg.EnvAdminToken
+	}
+	if cfg.EnvAPIKey != "" {
+		cfg.APIKeys = append(cfg.APIKeys, cfg.EnvAPIKey)
 	}
 
 	client := kiro.NewClient(nil)

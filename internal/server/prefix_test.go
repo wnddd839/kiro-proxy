@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 func TestUpstreamPrefixTraceAcrossTurns(t *testing.T) {

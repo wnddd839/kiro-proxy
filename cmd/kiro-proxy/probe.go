@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/pool"
-	"kiro-proxy/internal/probe"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/pool"
+	"github.com/wnddd839/kiro.cache/internal/probe"
 )
 
 const probeUsage = `kiro-proxy probe <experiment> [flags]

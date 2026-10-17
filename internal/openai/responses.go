@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"kiro-proxy/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/turn"
 )
 
 // ResponseObject 是 Responses API 的 response 对象：非流式响应体，也嵌在流式生命周期事件里。

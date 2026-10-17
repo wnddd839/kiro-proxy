@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"kiro-proxy/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/turn"
 )
 
 var usage = turn.Usage{Input: 10, CacheRead: 80, CacheWrite: 5, Output: 30, Reasoning: 7, Credits: 0.25, CostUSD: 0.0123}

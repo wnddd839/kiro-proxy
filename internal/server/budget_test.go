@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/anthropic"
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/keys"
-	"kiro-proxy/internal/meter"
-	"kiro-proxy/internal/turn"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 // 并发准入互相看得见预留：额度只够两条时，6 条并发里恰好放行两条，结算后释放预留且不超限。

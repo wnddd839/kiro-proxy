@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"kiro-proxy/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/turn"
 )
 
 // NewID 返回 prefix + 24 位十六进制随机串。

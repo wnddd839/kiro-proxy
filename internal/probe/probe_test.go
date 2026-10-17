@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
 )
 
 func frame(eventType, payload string) []byte {

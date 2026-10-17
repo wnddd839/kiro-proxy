@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"kiro-proxy/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
 )
 
 // Responses 工具的新写法（Codex 用）：custom（自由文本输入，如 apply_patch）、namespace 分组、

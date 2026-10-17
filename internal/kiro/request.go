@@ -1,6 +1,6 @@
 // Package kiro 说 Kiro 的话：把 Anthropic Messages 请求转成 generateAssistantResponse 的
 // conversationState，把 AWS event stream 解码回事件，并处理鉴权与管理 API。
-// 形状对齐 vendor/opencode-kiro-auth 与 Magpie internal/gateway/kiro.go。
+// 形状对齐 third_party/opencode-kiro-auth 与 Magpie internal/gateway/kiro.go。
 package kiro
 
 import (
@@ -14,7 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"kiro-proxy/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
 )
 
 const (

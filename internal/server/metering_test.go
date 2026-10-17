@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/keys"
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/meter"
-	"kiro-proxy/internal/turn"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 // kiroPlain 是真实 Kiro 的样子：不报 tokenUsage，只报上下文百分比与 credits。

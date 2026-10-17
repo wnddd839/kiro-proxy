@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/meter"
-	"kiro-proxy/internal/pool"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/pool"
 )
 
 func TestSessionStateDoesNotPersistSystemText(t *testing.T) {

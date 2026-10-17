@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 func (h *harness) api(t *testing.T, method, path, body string) (int, map[string]any) {

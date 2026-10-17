@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"kiro-proxy/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
 )
 
 // ChatOptions 是 Chat Completions 请求里不进 anthropic.Request、但写回复时要用的选项。

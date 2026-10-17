@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/meter"
 )
 
 func TestPriceRefreshAndModelRows(t *testing.T) {

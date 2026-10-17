@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/pool"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/pool"
 )
 
 // adminMux 是号池管理接口。响应里不含 token。

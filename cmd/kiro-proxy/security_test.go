@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"kiro-proxy/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/config"
 )
 
 // 启动守卫：监听可能被本机之外访问、又没有可用的下游 key 时拒绝启动；显式覆盖时放行并醒目告警。

@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/pool"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/pool"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 // consoleHTML 是管理台页面。页面本身不含数据，数据走 /admin/*（受 admin_token 保护）。

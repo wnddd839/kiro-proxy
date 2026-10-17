@@ -15,15 +15,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"kiro-proxy/internal/anthropic"
-	"kiro-proxy/internal/config"
-	"kiro-proxy/internal/keys"
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/meter"
-	"kiro-proxy/internal/normalize"
-	"kiro-proxy/internal/pool"
-	"kiro-proxy/internal/sessionpin"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/config"
+	"github.com/wnddd839/kiro.cache/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/meter"
+	"github.com/wnddd839/kiro.cache/internal/normalize"
+	"github.com/wnddd839/kiro.cache/internal/pool"
+	"github.com/wnddd839/kiro.cache/internal/sessionpin"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 const maxBody = 64 << 20 // 带图片的长对话

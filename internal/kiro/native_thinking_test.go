@@ -2,7 +2,7 @@ package kiro
 
 import (
 	"encoding/json"
-	"kiro-proxy/internal/anthropic"
+	"github.com/wnddd839/kiro.cache/internal/anthropic"
 	"strings"
 	"testing"
 )

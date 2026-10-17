@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/turn"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/turn"
 )
 
 // 隐藏 token 漂移监控。

@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"kiro-proxy/internal/kiro"
-	"kiro-proxy/internal/sessionpin"
+	"github.com/wnddd839/kiro.cache/internal/kiro"
+	"github.com/wnddd839/kiro.cache/internal/sessionpin"
 )
 
 // refreshLead 是提前刷新的窗口。

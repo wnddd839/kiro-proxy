@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"kiro-proxy/internal/keys"
-	"kiro-proxy/internal/pool"
-	"kiro-proxy/internal/usage"
+	"github.com/wnddd839/kiro.cache/internal/keys"
+	"github.com/wnddd839/kiro.cache/internal/pool"
+	"github.com/wnddd839/kiro.cache/internal/usage"
 )
 
 // 管理接口：下游 key、用量查询、账单、号池批量操作、价格表。
