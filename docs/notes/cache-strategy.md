@@ -14,7 +14,7 @@
 - `cacheWriteInputTokens`
 - `uncachedInputTokens`
 
-这是 **prompt / 会话级** 的记账，不是完整回答的 KV。Magpie 和插件每次 `conversationId = randomUUID()`，再把整段 history 塞进 body。`conversationId` 排在 JSON 里 `history` 前面。只要上游按前缀或按 conversation 索引，这一个 UUID 就能把命中打成 0。
+这是 **prompt / 会话级** 的记账，不是完整回答的 KV。常见的 Kiro 插件每次请求都新生成 `conversationId`，再把整段 history 塞进 body。`conversationId` 排在 JSON 里 `history` 前面。只要上游按前缀或按 conversation 索引，这一个 UUID 就能把命中打成 0。
 
 ---
 
@@ -59,7 +59,7 @@
 - 两个不同客户端如果首条 user 巧合一样会碰到一起——可接受；比 round-robin 要好
 - 429 / USAGE_LIMIT / 换号：作废旧 conversationId，不要拿旧 id 去新号上续
 
-仍发全量 history（跟 Magpie 一样）。先只把 conversationId 稳住，打 `cacheRead`。若仍是 0，再试只发 delta。
+仍发全量 history。先只把 conversationId 稳住，打 `cacheRead`。若仍是 0，再试只发 delta。
 
 ---
 
